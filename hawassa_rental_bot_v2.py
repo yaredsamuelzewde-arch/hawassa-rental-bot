@@ -1,33 +1,6 @@
 """
 Hawassa Rental Bot — button-flow version
 ==========================================
-Flow (like https://t.me/Phonofilmbot):
-  /start -> tap a Sub-City button
-         -> tap a Budget range button
-         -> tap a Room-count button
-         -> bot shows matching houses from your channel, including phone number
-
-Requirements:
-    pip install python-telegram-bot --break-system-packages
-
-Setup:
-    1. Create the bot with @BotFather -> get BOT_TOKEN.
-    2. Add the bot as ADMIN of your channel (so it can read posts).
-    3. Fill in BOT_TOKEN and CHANNEL_USERNAME below.
-    4. Run: python hawassa_rental_bot_v2.py
-
-How to post a listing in your channel so the bot can read it — just write
-naturally, but make sure it includes:
-  - The sub-city name (e.g. "Tabor" or "ታቦር")
-  - Room count as "ባለ2" (or "ሙሉ ግቢ" for a full compound)
-  - Price with "ብር" or "price" next to the number, e.g. "ዋጋ 7000 ብር"
-  - A phone number (e.g. 0912345678)
-
-Example channel post:
-    አዲስ ቤት! Tabor Sub-City, ሆጋኔ ዋቾ አካባቢ
-    ባለ2 ክፍል ቤት
-    ዋጋ 7000 ብር
-    ስልክ: 0912345678
 """
 
 import json
@@ -39,23 +12,25 @@ from telegram.ext import (
     MessageHandler, ContextTypes, filters
 )
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]  # set this in Railway's Variables tab, not here
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))  # set this in Railway's Variables tab too
-DB_FILE = "/data/listings.json"  # /data is a persistent Railway volume — survives redeploys
+BOT_TOKEN = os.environ["BOT_TOKEN"]  
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))  
+DB_FILE = "/data/listings.json"  # Persistent volume for Railway
 
 SUBCITIES = [
     "Tabor", "Hawela-Tula", "Addis Ketema", "Hayek Dare",
     "Menehariya", "Misrak", "Bahile Adarash", "Mehal Ketema",
 ]
 
+# Updated to match your exact requested buttons
 BUDGETS = [
-    ("2000-5000 ብር", 2000, 5000),
-    ("5000-10000 ብር", 5000, 10000),
-    ("10000-15000 ብር", 10000, 15000),
-    ("15000+ ብር", 15000, None),
+    ("2000-5000", 2000, 5000),
+    ("5000-10000", 5000, 10000),
+    ("10000-15000", 10000, 15000),
+    ("15000+", 15000, None),
 ]
 
-ROOM_TYPES = ["ባለ1", "ባለ2", "ባለ3", "ባለ4", "ሙሉ ግቢ"]
+# Updated to include the spaces you requested
+ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባለ 3", "ባለ 4", "ሙሉ ግቢ"]
 
 PHONE_REGEX = re.compile(r"(?:\+251|0)9\d{8}")
 PRICE_REGEX = re.compile(r"(\d{3,6})\s*ብር")
@@ -89,15 +64,15 @@ def parse_listing(text: str):
 
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Grab the post whether it's brand new OR edited
+    # Includes the fix for catching edited channel posts
     post = update.channel_post or update.edited_channel_post
     if not post:
         return
-    post_text = post.text or post.caption  # photos store their caption separately from plain text
+    post_text = post.text or post.caption  
     if not post_text:
         return
     if CHANNEL_ID and post.chat.id != CHANNEL_ID:
-        return  # ignore posts from any other channel
+        return  
     listing = parse_listing(post_text)
     listing["message_id"] = post.message_id
     listings = load_listings()
@@ -127,8 +102,9 @@ async def on_subcity_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(label, callback_data=f"budget:{low}:{high or ''}")]
         for label, low, high in BUDGETS
     ]
+    # Updated text based on your request
     await query.edit_message_text(
-        "የገንዘብ መጠንህን አስገባ (ለምሳሌ:- 5000, 1000)\nSelect your budget range:",
+        "የ ገንዘብ መጠንህን አስገባ (ለምሳሌ:- 5000 1000)",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -141,8 +117,9 @@ async def on_budget_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["budget_high"] = int(high) if high else None
 
     buttons = [[InlineKeyboardButton(r, callback_data=f"room:{r}")] for r in ROOM_TYPES]
+    # Updated text based on your request
     await query.edit_message_text(
-        "ባለ ስንት ክፍል ነው መከራየር የፈለጉት?\nHow many rooms?",
+        "ባለ ስንት ክፍል ነው መከራየር የፈለጉት",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -176,8 +153,19 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.edit_message_text(f"{len(results)} ቤት(ቶች) ተገኝተዋል! Found {len(results)} matching house(s):")
+    
     for r in results[:5]:
-        await context.bot.send_message(chat_id=query.message.chat_id, text=r["text"])
+        try:
+            # This directly FORWARDS the message from the channel, 
+            # bringing all photos and formatting with it exactly like @Phonofilmbot!
+            await context.bot.forward_message(
+                chat_id=query.message.chat_id,
+                from_chat_id=CHANNEL_ID,
+                message_id=r["message_id"]
+            )
+        except Exception:
+            # Fallback text if the channel forwarding fails
+            await context.bot.send_message(chat_id=query.message.chat_id, text=r["text"])
 
 
 def main():
