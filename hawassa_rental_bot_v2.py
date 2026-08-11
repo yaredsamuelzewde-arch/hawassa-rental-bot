@@ -1,13 +1,15 @@
 """
-Hawassa Rental Telegram Bot — Production Version
-================================================
+Hawassa Rental Telegram Bot — Complete Production Code
+======================================================
 Features:
-- SQLite Database (Listings & User Tracking)
-- Forced Channel Join Verification
-- Multilingual Support (Amharic & English)
-- Role Selection (Landlord vs Tenant)
-- Exact & Related Match Search Filtering
-- Admin Commands (/stats, /broadcast, /delete)
+- SQLite Database (Auto-creates tables for listings and users)
+- Forced Channel Membership Verification
+- Bilingual Navigation (Amharic 🇪🇹 & English 🇬🇧)
+- Dual Role Selection (Landlord vs Tenant)
+- Automated Channel Post Parsing & Indexing
+- Exact Match & Related Match Price Search
+- Admin Panel (/stats, /broadcast, /delete)
+- Full Navigation (Back & Return to Main Menu buttons)
 """
 
 import logging
@@ -50,13 +52,13 @@ BUDGETS = [
     ("15000+ ብር / ETB", 15000, None),
 ]
 
-ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባle 3", "ባለ 4", "ሙሉ ግቢ"]
+ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባለ 3", "ባለ 4", "ሙሉ ግቢ"]
 
 PHONE_REGEX = re.compile(r"(?:\+251|0)9\d{8}")
 PRICE_REGEX = re.compile(r"(\d{3,6})\s*ብር")
 
 
-# ---------- SQLite Database Initialization & Helpers ----------
+# ---------- Database Helper Functions ----------
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -67,7 +69,6 @@ def get_db():
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
-        # Table for storing house listings
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS listings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +81,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Table for tracking bot users (for broadcasts and statistics)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -157,7 +157,7 @@ def search_listings(subcity, room, budget_low, budget_high):
 
 def parse_listing(text: str):
     subcity = next((s for s in SUBCITIES if s.lower() in text.lower()), None)
-    
+
     room = None
     text_no_spaces = text.replace(" ", "")
     for r in ROOM_TYPES:
@@ -187,7 +187,7 @@ async def is_user_joined(bot, user_id: int) -> bool:
         return True
 
 
-# ---------- Inline Keyboards ----------
+# ---------- Keyboards ----------
 
 def get_force_join_keyboard():
     return InlineKeyboardMarkup([
@@ -292,10 +292,10 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone=parsed["phone"],
         raw_text=post_text
     )
-    logger.info(f"Listings DB Updated — Message ID: {post.message_id}")
+    logger.info(f"Listing Saved — Message ID: {post.message_id}")
 
 
-# ---------- Command Handlers ----------
+# ---------- User Handlers ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -322,65 +322,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(text, reply_markup=get_language_keyboard())
 
-
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    total_users, total_listings = get_stats()
-    text = (
-        f"📊 **Hawassa Rental Bot Statistics**\n\n"
-        f"👥 **Total Registered Users:** {total_users}\n"
-        f"🏠 **Total Active Listings:** {total_listings}"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    broadcast_text = " ".join(context.args)
-    if not broadcast_text:
-        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
-        return
-
-    with get_db() as conn:
-        users = conn.execute("SELECT user_id FROM users").fetchall()
-
-    success_count = 0
-    fail_count = 0
-
-    for user in users:
-        try:
-            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
-            success_count += 1
-        except Exception:
-            fail_count += 1
-
-    await update.message.reply_text(
-        f"📢 Broadcast Finished!\n\n✅ Sent to: {success_count}\n❌ Failed: {fail_count}"
-    )
-
-
-async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
-        return
-
-    msg_id = int(context.args[0])
-    removed = delete_listing(msg_id)
-
-    if removed:
-        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
-
-
-# ---------- Callback Query Flow ----------
 
 async def on_check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -492,7 +433,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Header Message
+    # Dynamic Header
     header_text = (
         f"🎯 **ትክክለኛ ፍለጋ ({len(exact_results)})**"
         if lang == "am"
@@ -500,7 +441,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.edit_message_text(header_text, parse_mode="Markdown")
 
-    # Forward Exact Matches
+    # Forward Exact Results
     for r in exact_results[:5]:
         try:
             await context.bot.forward_message(
@@ -511,7 +452,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
-    # Forward Related Matches (Prices slightly outside requested range)
+    # Forward Related Search Results
     if related_results:
         related_header = (
             f"\n💡 **ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):**"
@@ -528,7 +469,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
-    # Final Action Bar
+    # Completion Menu
     completion_text = (
         f"ለበለጠ መረጃ ወይም ለትዕዛዝ ያናግሩ: @{SUPPORT_USERNAME}\nወደ ዋናው ማውጫ ለመመለስ ከታች ያለውን ቁልፍ ይጫኑ:"
         if lang == "am"
@@ -542,21 +483,80 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- Main Runner ----------
+# ---------- Admin Handlers ----------
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    total_users, total_listings = get_stats()
+    text = (
+        f"📊 **Hawassa Rental Bot Statistics**\n\n"
+        f"👥 **Total Registered Users:** {total_users}\n"
+        f"🏠 **Total Active Listings:** {total_listings}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    broadcast_text = " ".join(context.args)
+    if not broadcast_text:
+        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
+        return
+
+    with get_db() as conn:
+        users = conn.execute("SELECT user_id FROM users").fetchall()
+
+    success_count = 0
+    fail_count = 0
+
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
+            success_count += 1
+        except Exception:
+            fail_count += 1
+
+    await update.message.reply_text(
+        f"📢 Broadcast Finished!\n\n✅ Sent to: {success_count}\n❌ Failed: {fail_count}"
+    )
+
+
+async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
+        return
+
+    msg_id = int(context.args[0])
+    removed = delete_listing(msg_id)
+
+    if removed:
+        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
+
+
+# ---------- Main Execution ----------
 
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # User & General Handlers
+    # User Command Handlers
     app.add_handler(CommandHandler("start", start))
-    
-    # Admin Handlers
+
+    # Admin Command Handlers
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("delete", admin_delete))
 
-    # Flow Callbacks
+    # Flow Handlers
     app.add_handler(CallbackQueryHandler(start, pattern=r"^restart_search$"))
     app.add_handler(CallbackQueryHandler(start, pattern=r"^back_to_lang$"))
     app.add_handler(CallbackQueryHandler(on_check_join, pattern=r"^check_join$"))
@@ -569,13 +569,13 @@ def main():
     app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
     app.add_handler(CallbackQueryHandler(on_room_chosen, pattern=r"^room:"))
 
-    # Channel Listener
+    # Channel Listener Handler
     app.add_handler(MessageHandler(
         filters.ChatType.CHANNEL & (filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST),
         on_channel_post
     ))
 
-    logger.info("Hawassa Rental Bot is active and running...")
+    logger.info("Hawassa Rental Bot active and listening...")
     app.run_polling()
 
 
