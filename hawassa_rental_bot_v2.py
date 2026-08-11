@@ -1,17 +1,3 @@
-"""
-Hawassa Rental Telegram Bot — Complete Production Code
-======================================================
-Features:
-- SQLite Database (Auto-creates tables for listings and users)
-- Forced Channel Membership Verification
-- Bilingual Navigation (Amharic 🇪🇹 & English 🇬🇧)
-- Dual Role Selection (Landlord vs Tenant)
-- Automated Channel Post Parsing & Indexing
-- Exact Match & Related Match Price Search
-- Admin Panel (/stats, /broadcast, /delete)
-- Full Navigation (Back & Return to Main Menu buttons)
-"""
-
 import logging
 import os
 import re
@@ -45,6 +31,17 @@ SUBCITIES = [
     "Menehariya", "Misrak", "Bahile Adarash", "Mehal Ketema",
 ]
 
+SUBCITY_MAP = {
+    "tabor": "Tabor", "ታቦር": "Tabor",
+    "hawela": "Hawela-Tula", "ቱላ": "Hawela-Tula", "ሐዋላ": "Hawela-Tula",
+    "addis ketema": "Addis Ketema", "አዲስ ከተማ": "Addis Ketema",
+    "hayek dare": "Hayek Dare", "ኃይቅ ዳር": "Hayek Dare", "ሀይቅ ዳር": "Hayek Dare",
+    "menehariya": "Menehariya", "መነሀሪያ": "Menehariya", "መነሃሪያ": "Menehariya",
+    "misrak": "Misrak", "ምስራቅ": "Misrak",
+    "bahile adarash": "Bahile Adarash", "ባህለ አዳራሽ": "Bahile Adarash", "ባህል አዳራሽ": "Bahile Adarash",
+    "mehal ketema": "Mehal Ketema", "ማዕከል ከተማ": "Mehal Ketema", "መሀል ከተማ": "Mehal Ketema"
+}
+
 BUDGETS = [
     ("2000-5000 ብር / ETB", 2000, 5000),
     ("5000-10000 ብር / ETB", 5000, 10000),
@@ -55,7 +52,6 @@ BUDGETS = [
 ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባለ 3", "ባለ 4", "ሙሉ ግቢ"]
 
 PHONE_REGEX = re.compile(r"(?:\+251|0)9\d{8}")
-PRICE_REGEX = re.compile(r"(\d{3,6})\s*ብር")
 
 
 # ---------- Database Helper Functions ----------
@@ -156,7 +152,13 @@ def search_listings(subcity, room, budget_low, budget_high):
 
 
 def parse_listing(text: str):
-    subcity = next((s for s in SUBCITIES if s.lower() in text.lower()), None)
+    text_lower = text.lower()
+
+    subcity = None
+    for keyword, canonical_name in SUBCITY_MAP.items():
+        if keyword in text_lower:
+            subcity = canonical_name
+            break
 
     room = None
     text_no_spaces = text.replace(" ", "")
@@ -165,13 +167,16 @@ def parse_listing(text: str):
             room = r
             break
 
-    price_match = PRICE_REGEX.search(text)
+    clean_text = text.replace(",", "")
+    price_match = re.search(r"(\d{3,7})\s*(?:ብር|etb|birr)", clean_text, re.IGNORECASE)
+    price = int(price_match.group(1)) if price_match else None
+
     phone_match = PHONE_REGEX.search(text)
 
     return {
         "subcity": subcity,
         "room": room,
-        "price": int(price_match.group(1)) if price_match else None,
+        "price": price,
         "phone": phone_match.group(0) if phone_match else None,
     }
 
@@ -187,7 +192,7 @@ async def is_user_joined(bot, user_id: int) -> bool:
         return True
 
 
-# ---------- Keyboards ----------
+# ---------- Inline Keyboards ----------
 
 def get_force_join_keyboard():
     return InlineKeyboardMarkup([
@@ -271,7 +276,7 @@ def get_result_action_keyboard(lang="am"):
     ])
 
 
-# ---------- Channel Handler ----------
+# ---------- Channel Listener ----------
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.edited_channel_post
@@ -292,7 +297,7 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone=parsed["phone"],
         raw_text=post_text
     )
-    logger.info(f"Listing Saved — Message ID: {post.message_id}")
+    logger.info(f"Listing Saved — Msg ID: {post.message_id} | Subcity: {parsed['subcity']} | Room: {parsed['room']} | Price: {parsed['price']}")
 
 
 # ---------- User Handlers ----------
@@ -357,8 +362,11 @@ async def on_role_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    role = query.data.split(":", 1)[1]
-    context.user_data["role"] = role
+    if query.data.startswith("role:"):
+        role = query.data.split(":", 1)[1]
+        context.user_data["role"] = role
+
+    role = context.user_data.get("role", "tenant")
     lang = context.user_data.get("lang", "am")
 
     if role == "landlord":
@@ -433,7 +441,6 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Dynamic Header
     header_text = (
         f"🎯 **ትክክለኛ ፍለጋ ({len(exact_results)})**"
         if lang == "am"
@@ -441,7 +448,6 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.edit_message_text(header_text, parse_mode="Markdown")
 
-    # Forward Exact Results
     for r in exact_results[:5]:
         try:
             await context.bot.forward_message(
@@ -452,7 +458,6 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
-    # Forward Related Search Results
     if related_results:
         related_header = (
             f"\n💡 **ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):**"
@@ -469,7 +474,6 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
-    # Completion Menu
     completion_text = (
         f"ለበለጠ መረጃ ወይም ለትዕዛዝ ያናግሩ: @{SUPPORT_USERNAME}\nወደ ዋናው ማውጫ ለመመለስ ከታች ያለውን ቁልፍ ይጫኑ:"
         if lang == "am"
@@ -548,34 +552,32 @@ def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # User Command Handlers
+    # Channel Post Listener
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
+
+    # User Commands
     app.add_handler(CommandHandler("start", start))
 
-    # Admin Command Handlers
+    # Admin Commands
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("delete", admin_delete))
 
-    # Flow Handlers
+    # Navigation Callbacks
     app.add_handler(CallbackQueryHandler(start, pattern=r"^restart_search$"))
     app.add_handler(CallbackQueryHandler(start, pattern=r"^back_to_lang$"))
     app.add_handler(CallbackQueryHandler(on_check_join, pattern=r"^check_join$"))
     app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^lang:"))
-    app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^back_to_role$"))
     app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^role:"))
-    app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^back_to_subcity$"))
+    app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^back_to_role$"))
     app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^subcity:"))
-    app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^back_to_budget$"))
+    app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^back_to_subcity$"))
     app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
+    app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^back_to_budget$"))
     app.add_handler(CallbackQueryHandler(on_room_chosen, pattern=r"^room:"))
 
-    # Channel Listener Handler
-    app.add_handler(MessageHandler(
-        filters.ChatType.CHANNEL & (filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST),
-        on_channel_post
-    ))
-
-    logger.info("Hawassa Rental Bot active and listening...")
+    # Start Polling
+    logger.info("Bot starting...")
     app.run_polling()
 
 
