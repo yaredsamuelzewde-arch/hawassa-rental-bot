@@ -18,7 +18,7 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
-DB_FILE = "/data/rental_bot.db"  # /data is a persistent Railway volume — survives redeploys
+DB_FILE = "/data/rental_bot.db" if os.path.exists("/data") else "rental_bot.db"  # /data is a persistent Railway volume — survives redeploys
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
