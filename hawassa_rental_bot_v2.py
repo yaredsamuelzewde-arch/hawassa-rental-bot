@@ -1,12 +1,11 @@
 """
-Hawassa Rental Telegram Bot — Fully Integrated Production Code
-==============================================================
+Hawassa Rental Telegram Bot — Fully Integrated Production Code (Railway Persistent Edition)
+==========================================================================================
 Features:
-- Railway Persistent Volume Auto-Detection (Prevents data loss on restart)
+- Railway Persistent Volume + DB_PATH Environment Variable (Zero data loss on restart or redeploy)
+- Forward-to-Import: Forward old channel posts to the bot to add them instantly!
 - Admin-Only Step-by-Step Interactive Post Creation (/post)
-- Interactive Broadcast supporting Text, Photos, and Videos (/broadcast)
-- /stats and /status showing usernames, last subcity, and room searched
-- HTML Parsing (Zero markdown crash errors)
+- Interactive Broadcast with Bilingual Button Menu (Contact Admin & Main Menu) (/stats, /broadcast)
 """
 
 import logging
@@ -30,7 +29,7 @@ CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
 
-# Automatically use Railway's persistent /data volume if available, else local file
+# Bulletproof Database Path Configuration for Railway Persistence
 DB_FILE = os.getenv("DB_PATH", "/data/rental_bot.db")
 if not os.path.exists("/data") and not os.path.isabs(DB_FILE):
     DB_FILE = "rental_bot.db"
@@ -47,14 +46,14 @@ SUBCITIES = [
 ]
 
 SUBCITY_MAP = {
-    "Tabor": "tabor", "ታቦር": "Tabor",
-    "Hawela": "hawela-Tula", "ቱላ": "Hawela-Tula", "ሐዋላ": "Hawela-Tula",
-    "Addis ketema": "addis Ketema", "አዲስ ከተማ": "Addis Ketema",
-    "Hayek dare": "hayek Dare", "ኃይቅ ዳር": "Hayek Dare", "ሀይቅ ዳር": "Hayek Dare",
-    "Menehariya": "menehariya", "መነሀሪያ": "Menehariya", "መነሃሪያ": "Menehariya",
-    "Misrak": "misrak", "ምስራቅ": "Misrak",
-    "Bahile adarash": "bahile Adarash", "ባህለ አዳራሽ": "Bahile Adarash", "ባህል አዳራሽ": "Bahile Adarash",
-    "Mehal ketema": "mehal Ketema", "ማዕከል ከተማ": "Mehal Ketema", "መሀል ከተማ": "Mehal Ketema"
+    "tabor": "Tabor", "ታቦር": "Tabor",
+    "hawela": "Hawela-Tula", "ቱላ": "Hawela-Tula", "ሐዋላ": "Hawela-Tula",
+    "addis ketema": "Addis Ketema", "አዲስ ከተማ": "Addis Ketema",
+    "hayek dare": "Hayek Dare", "ኃይቅ ዳር": "Hayek Dare", "ሀይቅ ዳር": "Hayek Dare",
+    "menehariya": "Menehariya", "መነሀሪያ": "Menehariya", "መነሃሪያ": "Menehariya",
+    "misrak": "Misrak", "ምስራቅ": "Misrak",
+    "bahile adarash": "Bahile Adarash", "ባህለ አዳራሽ": "Bahile Adarash", "ባህል አዳራሽ": "Bahile Adarash",
+    "mehal ketema": "Mehal Ketema", "ማዕከል ከተማ": "Mehal Ketema", "መሀል ከተማ": "Mehal Ketema"
 }
 
 BUDGETS = [
@@ -154,6 +153,32 @@ def delete_listing(message_id):
         return cursor.rowcount > 0
 
 
+def parse_listing_text(text):
+    text_lower = text.lower()
+    
+    subcity = "Tabor"
+    for key, val in SUBCITY_MAP.items():
+        if key in text_lower:
+            subcity = val
+            break
+            
+    room = "ባለ 1"
+    for r in ROOM_TYPES:
+        if r in text:
+            room = r
+            break
+            
+    price = None
+    price_match = re.findall(r'\b\d{3,6}\b', text)
+    if price_match:
+        price = int(price_match[0])
+        
+    phone_match = PHONE_REGEX.search(text)
+    phone = phone_match.group(0) if phone_match else ""
+    
+    return subcity, room, price, phone
+
+
 def search_listings(subcity, room, budget_low, budget_high):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -240,8 +265,15 @@ def get_result_action_keyboard(lang="am"):
     main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
     return InlineKeyboardMarkup([[InlineKeyboardButton(contact_label, url=f"https://t.me/{SUPPORT_USERNAME}")], [InlineKeyboardButton(main_menu_label, callback_data="restart_search")]])
 
+def get_broadcast_action_keyboard():
+    """Bilingual Menu Buttons for Broadcasted Messages"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 አድሚን ያናግሩ / Contact Admin", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🏠 ዋና ማውጫ / Main Menu", callback_data="restart_search")]
+    ])
 
-# ---------- Channel Listener ----------
+
+# ---------- Channel Listener & Forward Import ----------
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.edited_channel_post
@@ -249,15 +281,34 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CHANNEL_ID and post.chat.id != CHANNEL_ID: return
 
     post_text = post.text or post.caption
-    parsed = parse_listing(post_text)
+    subcity, room, price, phone = parse_listing_text(post_text)
 
     save_listing(
         message_id=post.message_id,
-        subcity=parsed["subcity"],
-        room=parsed["room"],
-        price=parsed["price"],
-        phone=parsed["phone"],
+        subcity=subcity,
+        room=room,
+        price=price,
+        phone=phone,
         raw_text=post_text
+    )
+
+
+async def handle_forwarded_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    msg = update.message
+    if not msg or not (msg.text or msg.caption): return
+
+    text = msg.text or msg.caption
+    subcity, room, price, phone = parse_listing_text(text)
+
+    save_listing(msg.message_id, subcity, room, price, phone, text)
+    await msg.reply_text(
+        f"✅ <b>Old Post Imported Successfully!</b>\n\n"
+        f"📍 <b>Subcity:</b> {subcity}\n"
+        f"🚪 <b>Room:</b> {room}\n"
+        f"💰 <b>Price:</b> {price} ETB\n"
+        f"📞 <b>Phone:</b> {phone}",
+        parse_mode="HTML"
     )
 
 
@@ -333,13 +384,13 @@ async def process_post_phone(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
-# ---------- Interactive Broadcast Wizard ----------
+# ---------- Interactive Broadcast Wizard (With Bilingual Buttons) ----------
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
     await update.message.reply_text(
         "📢 <b>Broadcast Mode Started</b>\n\n"
-        "You can now send the broadcast message. You can send text, a photo, or a video with a caption.\n\n"
+        "Send your message, photo, or video. The bilingual button menu will be attached automatically.\n\n"
         "<i>(Type /cancel to abort)</i>",
         parse_mode="HTML"
     )
@@ -352,14 +403,16 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success_count = 0
     fail_count = 0
     
-    await update.message.reply_text("⏳ Sending broadcast, please wait...")
+    await update.message.reply_text("⏳ Sending broadcast with buttons, please wait...")
 
     for user in users:
         try:
+            # Automatically attaches the bilingual contact and main menu buttons underneath the broadcasted message
             await context.bot.copy_message(
                 chat_id=user["user_id"],
                 from_chat_id=update.message.chat_id,
-                message_id=update.message.message_id
+                message_id=update.message.message_id,
+                reply_markup=get_broadcast_action_keyboard()
             )
             success_count += 1
         except Exception:
@@ -575,6 +628,8 @@ def main():
     app.add_handler(broadcast_handler)
 
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
+    app.add_handler(MessageHandler(filters.FORWARDED & filters.TEXT & filters.ChatType.PRIVATE, handle_forwarded_import))
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("status", admin_stats))
