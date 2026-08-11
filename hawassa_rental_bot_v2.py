@@ -1,9 +1,12 @@
 """
 Hawassa Rental Telegram Bot — Fully Integrated Production Code
 ==============================================================
-New Features:
-- /stats now shows Usernames, Subcity, and Room searched
-- /broadcast is interactive and supports Text, Photos, and Videos
+Features:
+- Railway Persistent Volume Auto-Detection (Prevents data loss on restart)
+- Admin-Only Step-by-Step Interactive Post Creation (/post)
+- Interactive Broadcast supporting Text, Photos, and Videos (/broadcast)
+- /stats and /status showing usernames, last subcity, and room searched
+- HTML Parsing (Zero markdown crash errors)
 """
 
 import logging
@@ -26,7 +29,12 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
-DB_FILE = "rental_bot.db"
+
+# Automatically use Railway's persistent /data volume if available, else local file
+if os.path.exists("/data"):
+    DB_FILE = "/data/rental_bot.db"
+else:
+    DB_FILE = "rental_bot.db"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -95,19 +103,17 @@ def init_db():
                 last_room TEXT
             )
         """)
-        # Upgrade existing database to include new columns safely
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN last_subcity TEXT")
             cursor.execute("ALTER TABLE users ADD COLUMN last_room TEXT")
         except Exception:
-            pass # Columns already exist
+            pass
             
         conn.commit()
 
 
 def register_user(user):
     with get_db() as conn:
-        # Check if user exists first to avoid overwriting their search history
         user_exists = conn.execute("SELECT user_id FROM users WHERE user_id = ?", (user.id,)).fetchone()
         if not user_exists:
             conn.execute("""
@@ -189,7 +195,6 @@ async def is_user_joined(bot, user_id: int) -> bool:
 
 
 # ---------- Inline Keyboards ----------
-# (Kept exactly the same as your working version)
 
 def get_force_join_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("📢 ቻናሉን ይቀላቀሉ (Join Channel)", url=CHANNEL_LINK)],[InlineKeyboardButton("✅ አረጋግጥ (Verify Join)", callback_data="check_join")]])
@@ -265,7 +270,6 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------- Admin Post Creation Wizard ----------
-# (Kept exactly the same as your working version)
 
 async def start_post_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
@@ -330,7 +334,7 @@ async def process_post_phone(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
-# ---------- Interactive Broadcast Wizard (NEW) ----------
+# ---------- Interactive Broadcast Wizard ----------
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
@@ -353,7 +357,6 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for user in users:
         try:
-            # copy_message sends the exact message (images, text, formatting) without the "Forwarded" tag
             await context.bot.copy_message(
                 chat_id=user["user_id"],
                 from_chat_id=update.message.chat_id,
@@ -440,7 +443,6 @@ async def on_subcity_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("subcity:"):
         subcity = query.data.split(":", 1)[1]
         context.user_data["subcity"] = subcity
-        # Save user's search preference to DB
         update_user_search(update.effective_user.id, subcity=subcity)
 
     lang = context.user_data.get("lang", "am")
@@ -471,7 +473,6 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     budget_high = context.user_data.get("budget_high")
     lang = context.user_data.get("lang", "am")
     
-    # Save user's room preference to DB
     update_user_search(update.effective_user.id, room=room)
 
     exact_results, related_results = search_listings(subcity, room, budget_low, budget_high)
@@ -506,7 +507,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         total_listings = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
         
-        # Fetch the most recent 30 users to display
         recent_users = conn.execute(
             "SELECT username, first_name, last_subcity, last_room FROM users ORDER BY joined_at DESC LIMIT 30"
         ).fetchall()
@@ -531,8 +531,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_lines.append(f"👤 {display_name} | 📍 {loc} | 🚪 {rm}")
 
     final_text = "\n".join(text_lines)
-    
-    # Telegram messages max length is 4096 characters, so we slice it just in case
     await update.message.reply_text(final_text[:4000], parse_mode="HTML")
 
 
@@ -553,7 +551,6 @@ def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Post Wizard
     post_handler = ConversationHandler(
         entry_points=[CommandHandler("post", start_post_wizard)],
         states={
@@ -567,11 +564,9 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_wizard)],
     )
     
-    # Broadcast Wizard (NEW)
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", start_broadcast)],
         states={
-            # Allows Text, Photos, or Videos
             BROADCAST_MSG: [MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO & ~filters.COMMAND, receive_broadcast)],
         },
         fallbacks=[CommandHandler("cancel", cancel_wizard)],
@@ -583,7 +578,7 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", admin_stats))
-    app.add_handler(CommandHandler("status", admin_stats)) # In case you type /status instead of /stats
+    app.add_handler(CommandHandler("status", admin_stats))
     app.add_handler(CommandHandler("delete", admin_delete))
 
     app.add_handler(CallbackQueryHandler(start, pattern=r"^restart_search$"))
