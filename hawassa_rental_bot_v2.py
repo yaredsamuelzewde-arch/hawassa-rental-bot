@@ -41,7 +41,7 @@ from telegram.ext import (
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]  # set this in Railway's Variables tab, not here
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))  # set this in Railway's Variables tab too
-DB_FILE = "listings.json"
+DB_FILE = "/data/listings.json"
 
 SUBCITIES = [
     "Tabor", "Hawela-Tula", "Addis Ketema", "Hayek Dare",
