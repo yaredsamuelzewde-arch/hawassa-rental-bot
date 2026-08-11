@@ -40,7 +40,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_USERNAME = "@your_channel_username"
+CHANNEL_USERNAME = "@hawassa_rental"
 DB_FILE = "listings.json"
 
 SUBCITIES = [
