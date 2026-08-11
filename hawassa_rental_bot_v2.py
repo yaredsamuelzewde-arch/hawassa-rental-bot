@@ -1,3 +1,15 @@
+"""
+Hawassa Rental Telegram Bot — Production Version
+================================================
+Features:
+- SQLite Database (Listings & User Tracking)
+- Forced Channel Join Verification
+- Multilingual Support (Amharic & English)
+- Role Selection (Landlord vs Tenant)
+- Exact & Related Match Search Filtering
+- Admin Commands (/stats, /broadcast, /delete)
+"""
+
 import logging
 import os
 import re
@@ -31,17 +43,6 @@ SUBCITIES = [
     "Menehariya", "Misrak", "Bahile Adarash", "Mehal Ketema",
 ]
 
-SUBCITY_MAP = {
-    "tabor": "Tabor", "ታቦር": "Tabor",
-    "hawela": "Hawela-Tula", "ቱላ": "Hawela-Tula", "ሐዋላ": "Hawela-Tula",
-    "addis ketema": "Addis Ketema", "አዲስ ከተማ": "Addis Ketema",
-    "hayek dare": "Hayek Dare", "ኃይቅ ዳር": "Hayek Dare", "ሀይቅ ዳር": "Hayek Dare",
-    "menehariya": "Menehariya", "መነሀሪያ": "Menehariya", "መነሃሪያ": "Menehariya",
-    "misrak": "Misrak", "ምስራቅ": "Misrak",
-    "bahile adarash": "Bahile Adarash", "ባህለ አዳራሽ": "Bahile Adarash", "ባህል አዳራሽ": "Bahile Adarash",
-    "mehal ketema": "Mehal Ketema", "ማዕከል ከተማ": "Mehal Ketema", "መሀል ከተማ": "Mehal Ketema"
-}
-
 BUDGETS = [
     ("2000-5000 ብር / ETB", 2000, 5000),
     ("5000-10000 ብር / ETB", 5000, 10000),
@@ -49,12 +50,13 @@ BUDGETS = [
     ("15000+ ብር / ETB", 15000, None),
 ]
 
-ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባለ 3", "ባለ 4", "ሙሉ ግቢ"]
+ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባle 3", "ባለ 4", "ሙሉ ግቢ"]
 
 PHONE_REGEX = re.compile(r"(?:\+251|0)9\d{8}")
+PRICE_REGEX = re.compile(r"(\d{3,6})\s*ብር")
 
 
-# ---------- Database Helper Functions ----------
+# ---------- SQLite Database Initialization & Helpers ----------
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -65,6 +67,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
+        # Table for storing house listings
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS listings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +80,7 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Table for tracking bot users (for broadcasts and statistics)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -152,14 +156,8 @@ def search_listings(subcity, room, budget_low, budget_high):
 
 
 def parse_listing(text: str):
-    text_lower = text.lower()
-
-    subcity = None
-    for keyword, canonical_name in SUBCITY_MAP.items():
-        if keyword in text_lower:
-            subcity = canonical_name
-            break
-
+    subcity = next((s for s in SUBCITIES if s.lower() in text.lower()), None)
+    
     room = None
     text_no_spaces = text.replace(" ", "")
     for r in ROOM_TYPES:
@@ -167,16 +165,13 @@ def parse_listing(text: str):
             room = r
             break
 
-    clean_text = text.replace(",", "")
-    price_match = re.search(r"(\d{3,7})\s*(?:ብር|etb|birr)", clean_text, re.IGNORECASE)
-    price = int(price_match.group(1)) if price_match else None
-
+    price_match = PRICE_REGEX.search(text)
     phone_match = PHONE_REGEX.search(text)
 
     return {
         "subcity": subcity,
         "room": room,
-        "price": price,
+        "price": int(price_match.group(1)) if price_match else None,
         "phone": phone_match.group(0) if phone_match else None,
     }
 
@@ -276,7 +271,7 @@ def get_result_action_keyboard(lang="am"):
     ])
 
 
-# ---------- Channel Listener ----------
+# ---------- Channel Handler ----------
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.edited_channel_post
@@ -297,10 +292,10 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone=parsed["phone"],
         raw_text=post_text
     )
-    logger.info(f"Listing Saved — Msg ID: {post.message_id} | Subcity: {parsed['subcity']} | Room: {parsed['room']} | Price: {parsed['price']}")
+    logger.info(f"Listings DB Updated — Message ID: {post.message_id}")
 
 
-# ---------- User Handlers ----------
+# ---------- Command Handlers ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -327,6 +322,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(text, reply_markup=get_language_keyboard())
 
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    total_users, total_listings = get_stats()
+    text = (
+        f"📊 **Hawassa Rental Bot Statistics**\n\n"
+        f"👥 **Total Registered Users:** {total_users}\n"
+        f"🏠 **Total Active Listings:** {total_listings}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    broadcast_text = " ".join(context.args)
+    if not broadcast_text:
+        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
+        return
+
+    with get_db() as conn:
+        users = conn.execute("SELECT user_id FROM users").fetchall()
+
+    success_count = 0
+    fail_count = 0
+
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
+            success_count += 1
+        except Exception:
+            fail_count += 1
+
+    await update.message.reply_text(
+        f"📢 Broadcast Finished!\n\n✅ Sent to: {success_count}\n❌ Failed: {fail_count}"
+    )
+
+
+async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
+        return
+
+    msg_id = int(context.args[0])
+    removed = delete_listing(msg_id)
+
+    if removed:
+        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
+
+
+# ---------- Callback Query Flow ----------
 
 async def on_check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -362,11 +416,8 @@ async def on_role_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data.startswith("role:"):
-        role = query.data.split(":", 1)[1]
-        context.user_data["role"] = role
-
-    role = context.user_data.get("role", "tenant")
+    role = query.data.split(":", 1)[1]
+    context.user_data["role"] = role
     lang = context.user_data.get("lang", "am")
 
     if role == "landlord":
@@ -441,6 +492,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Header Message
     header_text = (
         f"🎯 **ትክክለኛ ፍለጋ ({len(exact_results)})**"
         if lang == "am"
@@ -448,6 +500,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.edit_message_text(header_text, parse_mode="Markdown")
 
+    # Forward Exact Matches
     for r in exact_results[:5]:
         try:
             await context.bot.forward_message(
@@ -458,6 +511,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
+    # Forward Related Matches (Prices slightly outside requested range)
     if related_results:
         related_header = (
             f"\n💡 **ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):**"
@@ -474,6 +528,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
+    # Final Action Bar
     completion_text = (
         f"ለበለጠ መረጃ ወይም ለትዕዛዝ ያናግሩ: @{SUPPORT_USERNAME}\nወደ ዋናው ማውጫ ለመመለስ ከታች ያለውን ቁልፍ ይጫኑ:"
         if lang == "am"
@@ -487,97 +542,40 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- Admin Handlers ----------
-
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    total_users, total_listings = get_stats()
-    text = (
-        f"📊 **Hawassa Rental Bot Statistics**\n\n"
-        f"👥 **Total Registered Users:** {total_users}\n"
-        f"🏠 **Total Active Listings:** {total_listings}"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    broadcast_text = " ".join(context.args)
-    if not broadcast_text:
-        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
-        return
-
-    with get_db() as conn:
-        users = conn.execute("SELECT user_id FROM users").fetchall()
-
-    success_count = 0
-    fail_count = 0
-
-    for user in users:
-        try:
-            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
-            success_count += 1
-        except Exception:
-            fail_count += 1
-
-    await update.message.reply_text(
-        f"📢 Broadcast Finished!\n\n✅ Sent to: {success_count}\n❌ Failed: {fail_count}"
-    )
-
-
-async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
-        return
-
-    msg_id = int(context.args[0])
-    removed = delete_listing(msg_id)
-
-    if removed:
-        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
-
-
-# ---------- Main Execution ----------
+# ---------- Main Runner ----------
 
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Channel Post Listener
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
-
-    # User Commands
+    # User & General Handlers
     app.add_handler(CommandHandler("start", start))
-
-    # Admin Commands
+    
+    # Admin Handlers
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("delete", admin_delete))
 
-    # Navigation Callbacks
+    # Flow Callbacks
     app.add_handler(CallbackQueryHandler(start, pattern=r"^restart_search$"))
     app.add_handler(CallbackQueryHandler(start, pattern=r"^back_to_lang$"))
     app.add_handler(CallbackQueryHandler(on_check_join, pattern=r"^check_join$"))
     app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^lang:"))
-    app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^role:"))
     app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^back_to_role$"))
-    app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^subcity:"))
+    app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^role:"))
     app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^back_to_subcity$"))
-    app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
+    app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^subcity:"))
     app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^back_to_budget$"))
+    app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
     app.add_handler(CallbackQueryHandler(on_room_chosen, pattern=r"^room:"))
 
-    # Start Polling
-    logger.info("Bot starting...")
+    # Channel Listener
+    app.add_handler(MessageHandler(
+        filters.ChatType.CHANNEL & (filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST),
+        on_channel_post
+    ))
+
+    logger.info("Hawassa Rental Bot is active and running...")
     app.run_polling()
 
 
