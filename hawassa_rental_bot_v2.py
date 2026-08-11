@@ -47,14 +47,14 @@ SUBCITIES = [
 ]
 
 SUBCITY_MAP = {
-    "tabor": "Tabor", "ታቦር": "Tabor",
-    "hawela": "Hawela-Tula", "ቱላ": "Hawela-Tula", "ሐዋላ": "Hawela-Tula",
-    "addis ketema": "Addis Ketema", "አዲስ ከተማ": "Addis Ketema",
-    "hayek dare": "Hayek Dare", "ኃይቅ ዳር": "Hayek Dare", "ሀይቅ ዳር": "Hayek Dare",
-    "menehariya": "Menehariya", "መነሀሪያ": "Menehariya", "መነሃሪያ": "Menehariya",
-    "misrak": "Misrak", "ምስራቅ": "Misrak",
-    "bahile adarash": "Bahile Adarash", "ባህለ አዳራሽ": "Bahile Adarash", "ባህል አዳራሽ": "Bahile Adarash",
-    "mehal ketema": "Mehal Ketema", "ማዕከል ከተማ": "Mehal Ketema", "መሀል ከተማ": "Mehal Ketema"
+    "Tabor": "tabor", "ታቦር": "Tabor",
+    "Hawela": "hawela-Tula", "ቱላ": "Hawela-Tula", "ሐዋላ": "Hawela-Tula",
+    "Addis ketema": "addis Ketema", "አዲስ ከተማ": "Addis Ketema",
+    "Hayek dare": "hayek Dare", "ኃይቅ ዳር": "Hayek Dare", "ሀይቅ ዳር": "Hayek Dare",
+    "Menehariya": "menehariya", "መነሀሪያ": "Menehariya", "መነሃሪያ": "Menehariya",
+    "Misrak": "misrak", "ምስራቅ": "Misrak",
+    "Bahile adarash": "bahile Adarash", "ባህለ አዳራሽ": "Bahile Adarash", "ባህል አዳራሽ": "Bahile Adarash",
+    "Mehal ketema": "mehal Ketema", "ማዕከል ከተማ": "Mehal Ketema", "መሀል ከተማ": "Mehal Ketema"
 }
 
 BUDGETS = [
