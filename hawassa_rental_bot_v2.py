@@ -3,14 +3,11 @@ Hawassa Rental Telegram Bot — Fully Integrated Production Code
 ==============================================================
 Features:
 - Admin-Only Step-by-Step Interactive Post Creation (/post)
+- Fix: Admin posts are now directly saved to the DB for Searching
+- Fix: Markdown Parsing replaced with HTML to prevent crashes
 - Photo Upload & Post Formatting with Contact Admin Button
 - Bilingual Subcity Mapping (Amharic & English keywords)
-- Enhanced Room & Price Parsers (Handles variations like '1 ክፍል', '1bed', commas)
 - SQLite Database Indexing & Search with Subcity Fallback
-- Forced Channel Join Verification
-- Dual Workflow (Landlord & Tenant)
-- Exact & Related Match Search Results
-- Admin Panel (/stats, /broadcast, /delete, /post)
 """
 
 import logging
@@ -113,6 +110,8 @@ def register_user(user):
 
 
 def save_listing(message_id, subcity, room, price, phone, raw_text):
+    if not message_id or not subcity:
+        return
     with get_db() as conn:
         conn.execute("""
             INSERT OR REPLACE INTO listings (message_id, subcity, room, price, phone, raw_text)
@@ -329,7 +328,7 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone=parsed["phone"],
         raw_text=post_text
     )
-    logger.info(f"Listing Saved — Msg ID: {post.message_id} | Subcity: {parsed['subcity']} | Room: {parsed['room']} | Price: {parsed['price']}")
+    logger.info(f"Listing Saved via Listener — Msg ID: {post.message_id}")
 
 
 # ---------- Admin Post Creation Wizard ----------
@@ -351,9 +350,9 @@ async def start_post_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["admin_post"] = {}
     await update.message.reply_text(
-        "📸 **ማስታወቂያ መፍጠሪያ (Post Creator)**\n\n"
+        "📸 <b>ማስታወቂያ መፍጠሪያ (Post Creator)</b>\n\n"
         "እባክዎ የቤቱን ፎቶ ይላኩ (Please send the house photo):",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     return POST_PHOTO
 
@@ -367,9 +366,9 @@ async def process_post_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         for sc in SUBCITIES
     ]
     await update.message.reply_text(
-        "📍 **ክፍለ ከተማ ይምረጡ (Select Subcity):**",
+        "📍 <b>ክፍለ ከተማ ይምረጡ (Select Subcity):</b>",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     return POST_SUBCITY
 
@@ -386,9 +385,9 @@ async def process_post_subcity(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("🏷️ የሚሸጥ (For Sale)", callback_data="post_type:የሚሸጥ")]
     ]
     await query.edit_message_text(
-        "🏷️ **የማስታወቂያ ዓይነት ይምረጡ (Select Category):**",
+        "🏷️ <b>የማስታወቂያ ዓይነት ይምረጡ (Select Category):</b>",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     return POST_TYPE
 
@@ -405,9 +404,9 @@ async def process_post_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for r in ROOM_TYPES
     ]
     await query.edit_message_text(
-        "🚪 **የክፍል ብዛት ይምረጡ (Select Room Type):**",
+        "🚪 <b>የክፍል ብዛት ይምረጡ (Select Room Type):</b>",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     return POST_ROOM
 
@@ -420,21 +419,28 @@ async def process_post_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["admin_post"]["room"] = room
 
     await query.edit_message_text(
-        "💰 **የቤቱን ዋጋ ያስገቡ (Enter Price in ETB/ብር):**\n"
-        "ምሳሌ: `8000` ወይም `10000`",
-        parse_mode="Markdown"
+        "💰 <b>የቤቱን ዋጋ ያስገቡ (Enter Price in ETB/ብር):</b>\n"
+        "<i>ምሳሌ: 8000 ወይም 10000</i>",
+        parse_mode="HTML"
     )
     return POST_PRICE
 
 
 async def process_post_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price_text = update.message.text.strip()
-    context.user_data["admin_post"]["price"] = price_text
+    # Ensure they only typed numbers (removes commas and letters automatically)
+    clean_price = re.sub(r"[^\d]", "", price_text)
+    
+    if not clean_price:
+        await update.message.reply_text("❌ እባክዎ ቁጥር ብቻ ያስገቡ (Please enter numbers only):")
+        return POST_PRICE
+
+    context.user_data["admin_post"]["price"] = int(clean_price)
 
     await update.message.reply_text(
-        "📞 **የስልክ ቁጥር ያስገቡ (Enter Phone Number):**\n"
-        "ምሳሌ: `0911223344`",
-        parse_mode="Markdown"
+        "📞 <b>የስልክ ቁጥር ያስገቡ (Enter Phone Number):</b>\n"
+        "<i>ምሳሌ: 0911223344</i>",
+        parse_mode="HTML"
     )
     return POST_PHONE
 
@@ -446,12 +452,12 @@ async def process_post_phone(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = context.user_data["admin_post"]
 
     caption = (
-        f"🏠 **{data['listing_type']} ቤት**\n\n"
-        f"📍 **ቦታ (Location):** {data['subcity']}\n"
-        f"🚪 **ክፍል (Room):** {data['room']}\n"
-        f"💰 **ዋጋ (Price):** {data['price']} ብር / ETB\n"
-        f"📞 **ስልክ (Phone):** {data['phone']}\n\n"
-        f"💬 **ለበለጠ መረጃ (Contact):** @{SUPPORT_USERNAME}"
+        f"🏠 <b>{data['listing_type']} ቤት</b>\n\n"
+        f"📍 <b>ቦታ (Location):</b> {data['subcity']}\n"
+        f"🚪 <b>ክፍል (Room):</b> {data['room']}\n"
+        f"💰 <b>ዋጋ (Price):</b> {data['price']} ብር / ETB\n"
+        f"📞 <b>ስልክ (Phone):</b> {data['phone']}\n\n"
+        f"💬 <b>ለበለጠ መረጃ (Contact):</b> @{SUPPORT_USERNAME}"
     )
 
     contact_keyboard = InlineKeyboardMarkup([
@@ -459,14 +465,27 @@ async def process_post_phone(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ])
 
     try:
-        await context.bot.send_photo(
+        # 1. Send the message to the channel
+        msg = await context.bot.send_photo(
             chat_id=CHANNEL_ID,
             photo=data["photo"],
             caption=caption,
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=contact_keyboard
         )
-        await update.message.reply_text("✅ ማስታወቂያው በስኬት ተለጥፏል! (Post successfully published to channel!)")
+        
+        # 2. CRITICAL FIX: Manually save this post to the database so it can be searched
+        save_listing(
+            message_id=msg.message_id,
+            subcity=data['subcity'],
+            room=data['room'],
+            price=data['price'],
+            phone=data['phone'],
+            raw_text=caption
+        )
+        logger.info(f"Listing Saved via /post Command — Msg ID: {msg.message_id}")
+
+        await update.message.reply_text("✅ ማስታወቂያው በስኬት ተለጥፎ ዳታቤዝ ውስጥ ገብቷል! (Post successfully published and added to search DB!)")
     except Exception as e:
         logger.error(f"Failed to post to channel: {e}")
         await update.message.reply_text(f"❌ Post failed. Make sure CHANNEL_ID is correct and bot is Admin.\nError: {e}")
@@ -623,11 +642,11 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     header_text = (
-        f"🎯 **ትክክለኛ ፍለጋ ({len(exact_results)})**"
+        f"🎯 <b>ትክክለኛ ፍለጋ ({len(exact_results)})</b>"
         if lang == "am"
-        else f"🎯 **Exact Matches ({len(exact_results)})**"
+        else f"🎯 <b>Exact Matches ({len(exact_results)})</b>"
     )
-    await query.edit_message_text(header_text, parse_mode="Markdown")
+    await query.edit_message_text(header_text, parse_mode="HTML")
 
     for r in exact_results[:5]:
         try:
@@ -641,9 +660,9 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if related_results:
         related_header = (
-            f"\n💡 **ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):**"
+            f"\n💡 <b>ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):</b>"
         )
-        await context.bot.send_message(chat_id=query.message.chat_id, text=related_header, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=query.message.chat_id, text=related_header, parse_mode="HTML")
 
         for r in related_results[:3]:
             try:
@@ -676,11 +695,11 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     total_users, total_listings = get_stats()
     text = (
-        f"📊 **Hawassa Rental Bot Statistics**\n\n"
-        f"👥 **Total Registered Users:** {total_users}\n"
-        f"🏠 **Total Active Listings:** {total_listings}"
+        f"📊 <b>Hawassa Rental Bot Statistics</b>\n\n"
+        f"👥 <b>Total Registered Users:</b> {total_users}\n"
+        f"🏠 <b>Total Active Listings:</b> {total_listings}"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -689,7 +708,7 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     broadcast_text = " ".join(context.args)
     if not broadcast_text:
-        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/broadcast Your message here`")
         return
 
     with get_db() as conn:
@@ -715,16 +734,16 @@ async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/delete <message_id>`")
         return
 
     msg_id = int(context.args[0])
     removed = delete_listing(msg_id)
 
     if removed:
-        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Listing <b>{msg_id}</b> successfully removed from database.", parse_mode="HTML")
     else:
-        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ Listing <b>{msg_id}</b> not found in database.", parse_mode="HTML")
 
 
 # ---------- Main Execution ----------
