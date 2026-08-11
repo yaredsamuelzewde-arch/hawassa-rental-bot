@@ -31,9 +31,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
 
 # Automatically use Railway's persistent /data volume if available, else local file
-if os.path.exists("/data"):
-    DB_FILE = "/data/rental_bot.db"
-else:
+DB_FILE = os.getenv("DB_PATH", "/data/rental_bot.db")
+if not os.path.exists("/data") and not os.path.isabs(DB_FILE):
     DB_FILE = "rental_bot.db"
 
 logging.basicConfig(
