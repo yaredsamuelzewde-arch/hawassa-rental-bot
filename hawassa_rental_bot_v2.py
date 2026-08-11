@@ -1,22 +1,42 @@
 """
-Hawassa Rental Bot — Forced Join, Role Selection & Related Search
-==================================================================
+Hawassa Rental Telegram Bot — Production Version
+================================================
+Features:
+- SQLite Database (Listings & User Tracking)
+- Forced Channel Join Verification
+- Multilingual Support (Amharic & English)
+- Role Selection (Landlord vs Tenant)
+- Exact & Related Match Search Filtering
+- Admin Commands (/stats, /broadcast, /delete)
 """
 
-import json
-import re
+import logging
 import os
+import re
+import sqlite3
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters
 )
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))  # e.g. -1001234567890
-CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
-DB_FILE = "/data/listings.json" if os.path.exists("/data") else "listings.json"
-SUPPORT_USERNAME = "Jatech_support"
+# ---------- Configuration & Setup ----------
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
+DB_FILE = "rental_bot.db"
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 SUBCITIES = [
     "Tabor", "Hawela-Tula", "Addis Ketema", "Hayek Dare",
@@ -30,32 +50,114 @@ BUDGETS = [
     ("15000+ ብር / ETB", 15000, None),
 ]
 
-ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባለ 3", "ባለ 4", "ሙሉ ግቢ"]
+ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባle 3", "ባለ 4", "ሙሉ ግቢ"]
 
 PHONE_REGEX = re.compile(r"(?:\+251|0)9\d{8}")
 PRICE_REGEX = re.compile(r"(\d{3,6})\s*ብር")
 
 
-# ---------- Database Helpers ----------
+# ---------- SQLite Database Initialization & Helpers ----------
 
-def load_listings():
-    if not os.path.exists(DB_FILE):
-        return []
-    try:
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def save_listings(listings):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(listings, f, ensure_ascii=False, indent=2)
+def init_db():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Table for storing house listings
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS listings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER UNIQUE,
+                subcity TEXT,
+                room TEXT,
+                price INTEGER,
+                phone TEXT,
+                raw_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Table for tracking bot users (for broadcasts and statistics)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+
+
+def register_user(user):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO users (user_id, username, first_name)
+            VALUES (?, ?, ?)
+        """, (user.id, user.username, user.first_name))
+        conn.commit()
+
+
+def save_listing(message_id, subcity, room, price, phone, raw_text):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO listings (message_id, subcity, room, price, phone, raw_text)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (message_id, subcity, room, price, phone, raw_text))
+        conn.commit()
+
+
+def delete_listing(message_id):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM listings WHERE message_id = ?", (message_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_stats():
+    with get_db() as conn:
+        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        total_listings = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+        return total_users, total_listings
+
+
+def search_listings(subcity, room, budget_low, budget_high):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM listings WHERE subcity = ? AND room = ?
+        """, (subcity, room))
+        rows = cursor.fetchall()
+
+    exact = []
+    related = []
+
+    for row in rows:
+        price = row["price"]
+        if price is not None:
+            in_range = True
+            if price < budget_low:
+                in_range = False
+            if budget_high is not None and price > budget_high:
+                in_range = False
+
+            if in_range:
+                exact.append(row)
+            else:
+                related.append(row)
+        else:
+            related.append(row)
+
+    return exact, related
 
 
 def parse_listing(text: str):
     subcity = next((s for s in SUBCITIES if s.lower() in text.lower()), None)
-
+    
     room = None
     text_no_spaces = text.replace(" ", "")
     for r in ROOM_TYPES:
@@ -71,7 +173,6 @@ def parse_listing(text: str):
         "room": room,
         "price": int(price_match.group(1)) if price_match else None,
         "phone": phone_match.group(0) if phone_match else None,
-        "text": text,
     }
 
 
@@ -82,28 +183,26 @@ async def is_user_joined(bot, user_id: int) -> bool:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         return member.status in ["creator", "administrator", "member"]
     except Exception as e:
-        print(f"Error checking channel membership: {e}")
+        logger.error(f"Error checking channel membership: {e}")
         return True
 
 
-# ---------- Keyboards ----------
+# ---------- Inline Keyboards ----------
 
 def get_force_join_keyboard():
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 ቻናሉን ይቀላቀሉ (Join Channel)", url=CHANNEL_LINK)],
         [InlineKeyboardButton("✅ አረጋግጥ (Verify Join)", callback_data="check_join")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 def get_language_keyboard():
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("አማርኛ 🇪🇹", callback_data="lang:am"),
             InlineKeyboardButton("English 🇬🇧", callback_data="lang:en"),
         ]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 def get_role_keyboard(lang="am"):
@@ -126,11 +225,10 @@ def get_landlord_keyboard(lang="am"):
     contact_label = "💬 አድሚን ያናግሩ (Contact Admin)" if lang == "am" else f"💬 Contact Admin (@{SUPPORT_USERNAME})"
     main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
 
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(contact_label, url=f"https://t.me/{SUPPORT_USERNAME}")],
         [InlineKeyboardButton(main_menu_label, callback_data="restart_search")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 def get_subcity_keyboard(lang="am"):
@@ -164,48 +262,47 @@ def get_room_keyboard(lang="am"):
 
 
 def get_result_action_keyboard(lang="am"):
-    contact_label = "💬 ያናግሩ / Contact"
+    contact_label = f"💬 ያናግሩ / Contact (@{SUPPORT_USERNAME})"
     main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
 
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(contact_label, url=f"https://t.me/{SUPPORT_USERNAME}")],
         [InlineKeyboardButton(main_menu_label, callback_data="restart_search")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
-# ---------- Channel Post Handler ----------
+# ---------- Channel Handler ----------
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.edited_channel_post
-    if not post:
-        return
-
-    post_text = post.text or post.caption
-    if not post_text:
+    if not post or not (post.text or post.caption):
         return
 
     if CHANNEL_ID and post.chat.id != CHANNEL_ID:
         return
 
-    listing = parse_listing(post_text)
-    listing["message_id"] = post.message_id
+    post_text = post.text or post.caption
+    parsed = parse_listing(post_text)
 
-    listings = load_listings()
-    listings = [l for l in listings if l.get("message_id") != post.message_id]
-    listings.append(listing)
-    save_listings(listings)
-    print(f"Saved listing: {listing}")
+    save_listing(
+        message_id=post.message_id,
+        subcity=parsed["subcity"],
+        room=parsed["room"],
+        price=parsed["price"],
+        phone=parsed["phone"],
+        raw_text=post_text
+    )
+    logger.info(f"Listings DB Updated — Message ID: {post.message_id}")
 
 
-# ---------- Command & Callback Flow ----------
+# ---------- Command Handlers ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    register_user(user)
     context.user_data.clear()
-    user_id = update.effective_user.id
 
-    # 1. Check Forced Channel Join
-    joined = await is_user_joined(context.bot, user_id)
+    joined = await is_user_joined(context.bot, user.id)
     if not joined:
         text = (
             "ቦቱን ለመጠቀም እባክዎ አስቀድመው የቴሌግራም ቻናላችንን ይቀላቀሉ!\n\n"
@@ -218,7 +315,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=get_force_join_keyboard())
         return
 
-    # 2. Show Language Selection
     text = "እባክዎ ቋንቋ ይምረጡ / Please choose your language:"
     if update.message:
         await update.message.reply_text(text, reply_markup=get_language_keyboard())
@@ -226,6 +322,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(text, reply_markup=get_language_keyboard())
 
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    total_users, total_listings = get_stats()
+    text = (
+        f"📊 **Hawassa Rental Bot Statistics**\n\n"
+        f"👥 **Total Registered Users:** {total_users}\n"
+        f"🏠 **Total Active Listings:** {total_listings}"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    broadcast_text = " ".join(context.args)
+    if not broadcast_text:
+        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
+        return
+
+    with get_db() as conn:
+        users = conn.execute("SELECT user_id FROM users").fetchall()
+
+    success_count = 0
+    fail_count = 0
+
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
+            success_count += 1
+        except Exception:
+            fail_count += 1
+
+    await update.message.reply_text(
+        f"📢 Broadcast Finished!\n\n✅ Sent to: {success_count}\n❌ Failed: {fail_count}"
+    )
+
+
+async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
+        return
+
+    msg_id = int(context.args[0])
+    removed = delete_listing(msg_id)
+
+    if removed:
+        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
+
+
+# ---------- Callback Query Flow ----------
 
 async def on_check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -326,30 +481,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     budget_high = context.user_data.get("budget_high")
     lang = context.user_data.get("lang", "am")
 
-    listings = load_listings()
-    exact_results = []
-    related_results = []
-
-    for l in listings:
-        if l.get("subcity") != subcity:
-            continue
-        if l.get("room") != room:
-            continue
-
-        price = l.get("price")
-        if price is not None:
-            is_exact = True
-            if price < budget_low:
-                is_exact = False
-            if budget_high is not None and price > budget_high:
-                is_exact = False
-
-            if is_exact:
-                exact_results.append(l)
-            else:
-                related_results.append(l)
-        else:
-            related_results.append(l)
+    exact_results, related_results = search_listings(subcity, room, budget_low, budget_high)
 
     if not exact_results and not related_results:
         no_match_text = (
@@ -368,7 +500,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.edit_message_text(header_text, parse_mode="Markdown")
 
-    # Send Exact Matches
+    # Forward Exact Matches
     for r in exact_results[:5]:
         try:
             await context.bot.forward_message(
@@ -377,9 +509,9 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=r["message_id"]
             )
         except Exception:
-            await context.bot.send_message(chat_id=query.message.chat_id, text=r["text"])
+            await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
-    # Send Related Matches
+    # Forward Related Matches (Prices slightly outside requested range)
     if related_results:
         related_header = (
             f"\n💡 **ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):**"
@@ -394,9 +526,9 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=r["message_id"]
                 )
             except Exception:
-                await context.bot.send_message(chat_id=query.message.chat_id, text=r["text"])
+                await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
 
-    # Final Contact & Menu Options
+    # Final Action Bar
     completion_text = (
         f"ለበለጠ መረጃ ወይም ለትዕዛዝ ያናግሩ: @{SUPPORT_USERNAME}\nወደ ዋናው ማውጫ ለመመለስ ከታች ያለውን ቁልፍ ይጫኑ:"
         if lang == "am"
@@ -410,13 +542,21 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- Main Execution ----------
+# ---------- Main Runner ----------
 
 def main():
+    init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Handlers
+    # User & General Handlers
     app.add_handler(CommandHandler("start", start))
+    
+    # Admin Handlers
+    app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CommandHandler("broadcast", admin_broadcast))
+    app.add_handler(CommandHandler("delete", admin_delete))
+
+    # Flow Callbacks
     app.add_handler(CallbackQueryHandler(start, pattern=r"^restart_search$"))
     app.add_handler(CallbackQueryHandler(start, pattern=r"^back_to_lang$"))
     app.add_handler(CallbackQueryHandler(on_check_join, pattern=r"^check_join$"))
@@ -429,12 +569,13 @@ def main():
     app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
     app.add_handler(CallbackQueryHandler(on_room_chosen, pattern=r"^room:"))
 
+    # Channel Listener
     app.add_handler(MessageHandler(
         filters.ChatType.CHANNEL & (filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST),
         on_channel_post
     ))
 
-    print("Bot is running...")
+    logger.info("Hawassa Rental Bot is active and running...")
     app.run_polling()
 
 
