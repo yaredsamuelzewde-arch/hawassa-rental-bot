@@ -1,42 +1,21 @@
 """
-Hawassa Rental Telegram Bot — Production Version
-================================================
-Features:
-- SQLite Database (Listings & User Tracking)
-- Forced Channel Join Verification
-- Multilingual Support (Amharic & English)
-- Role Selection (Landlord vs Tenant)
-- Exact & Related Match Search Filtering
-- Admin Commands (/stats, /broadcast, /delete)
+Hawassa Rental Bot — Multilingual with Related Searches & Contact
+=================================================================
 """
 
-import logging
-import os
+import json
 import re
-import sqlite3
-from dotenv import load_dotenv
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters
 )
 
-# ---------- Configuration & Setup ----------
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
-DB_FILE = "rental_bot.db"
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))
+DB_FILE = "/data/listings.json" if os.path.exists("/data") else "listings.json"
+SUPPORT_USERNAME = "Jatech_support"
 
 SUBCITIES = [
     "Tabor", "Hawela-Tula", "Addis Ketema", "Hayek Dare",
@@ -50,114 +29,30 @@ BUDGETS = [
     ("15000+ ብር / ETB", 15000, None),
 ]
 
-ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባle 3", "ባለ 4", "ሙሉ ግቢ"]
+ROOM_TYPES = ["ባለ 1", "ባለ 2", "ባለ 3", "ባለ 4", "ሙሉ ግቢ"]
 
 PHONE_REGEX = re.compile(r"(?:\+251|0)9\d{8}")
 PRICE_REGEX = re.compile(r"(\d{3,6})\s*ብር")
 
 
-# ---------- SQLite Database Initialization & Helpers ----------
-
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    with get_db() as conn:
-        cursor = conn.cursor()
-        # Table for storing house listings
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS listings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER UNIQUE,
-                subcity TEXT,
-                room TEXT,
-                price INTEGER,
-                phone TEXT,
-                raw_text TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Table for tracking bot users (for broadcasts and statistics)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
+def load_listings():
+    if not os.path.exists(DB_FILE):
+        return []
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
 
 
-def register_user(user):
-    with get_db() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO users (user_id, username, first_name)
-            VALUES (?, ?, ?)
-        """, (user.id, user.username, user.first_name))
-        conn.commit()
-
-
-def save_listing(message_id, subcity, room, price, phone, raw_text):
-    with get_db() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO listings (message_id, subcity, room, price, phone, raw_text)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (message_id, subcity, room, price, phone, raw_text))
-        conn.commit()
-
-
-def delete_listing(message_id):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM listings WHERE message_id = ?", (message_id,))
-        conn.commit()
-        return cursor.rowcount > 0
-
-
-def get_stats():
-    with get_db() as conn:
-        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        total_listings = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
-        return total_users, total_listings
-
-
-def search_listings(subcity, room, budget_low, budget_high):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM listings WHERE subcity = ? AND room = ?
-        """, (subcity, room))
-        rows = cursor.fetchall()
-
-    exact = []
-    related = []
-
-    for row in rows:
-        price = row["price"]
-        if price is not None:
-            in_range = True
-            if price < budget_low:
-                in_range = False
-            if budget_high is not None and price > budget_high:
-                in_range = False
-
-            if in_range:
-                exact.append(row)
-            else:
-                related.append(row)
-        else:
-            related.append(row)
-
-    return exact, related
+def save_listings(listings):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(listings, f, ensure_ascii=False, indent=2)
 
 
 def parse_listing(text: str):
     subcity = next((s for s in SUBCITIES if s.lower() in text.lower()), None)
-    
+
     room = None
     text_no_spaces = text.replace(" ", "")
     for r in ROOM_TYPES:
@@ -173,68 +68,27 @@ def parse_listing(text: str):
         "room": room,
         "price": int(price_match.group(1)) if price_match else None,
         "phone": phone_match.group(0) if phone_match else None,
+        "text": text,
     }
 
 
-async def is_user_joined(bot, user_id: int) -> bool:
-    if not CHANNEL_ID:
-        return True
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ["creator", "administrator", "member"]
-    except Exception as e:
-        logger.error(f"Error checking channel membership: {e}")
-        return True
-
-
-# ---------- Inline Keyboards ----------
-
-def get_force_join_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 ቻናሉን ይቀላቀሉ (Join Channel)", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("✅ አረጋግጥ (Verify Join)", callback_data="check_join")]
-    ])
-
+# ---------- Keyboards ----------
 
 def get_language_keyboard():
-    return InlineKeyboardMarkup([
+    buttons = [
         [
             InlineKeyboardButton("አማርኛ 🇪🇹", callback_data="lang:am"),
             InlineKeyboardButton("English 🇬🇧", callback_data="lang:en"),
         ]
-    ])
-
-
-def get_role_keyboard(lang="am"):
-    if lang == "am":
-        buttons = [
-            [InlineKeyboardButton("🏠 አከራይ / ሻጭ", callback_data="role:landlord")],
-            [InlineKeyboardButton("🔍 ተከራይ", callback_data="role:tenant")],
-            [InlineKeyboardButton("🌐 ቋንቋ ቀይር", callback_data="back_to_lang")]
-        ]
-    else:
-        buttons = [
-            [InlineKeyboardButton("🏠 Landlord / Seller", callback_data="role:landlord")],
-            [InlineKeyboardButton("🔍 Tenant", callback_data="role:tenant")],
-            [InlineKeyboardButton("🌐 Change Language", callback_data="back_to_lang")]
-        ]
+    ]
     return InlineKeyboardMarkup(buttons)
-
-
-def get_landlord_keyboard(lang="am"):
-    contact_label = "💬 አድሚን ያናግሩ (Contact Admin)" if lang == "am" else f"💬 Contact Admin (@{SUPPORT_USERNAME})"
-    main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
-
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(contact_label, url=f"https://t.me/{SUPPORT_USERNAME}")],
-        [InlineKeyboardButton(main_menu_label, callback_data="restart_search")]
-    ])
 
 
 def get_subcity_keyboard(lang="am"):
     buttons = [[InlineKeyboardButton(sc, callback_data=f"subcity:{sc}")] for sc in SUBCITIES]
-    back_label = "⬅️ ተመለስ (Back)" if lang == "am" else "⬅️ Back"
-    buttons.append([InlineKeyboardButton(back_label, callback_data="back_to_role")])
+    
+    back_label = "🌐 ቋንቋ ቀይር / Change Language" if lang == "am" else "🌐 Change Language"
+    buttons.append([InlineKeyboardButton(back_label, callback_data="back_to_lang")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -243,9 +97,10 @@ def get_budget_keyboard(lang="am"):
         [InlineKeyboardButton(label, callback_data=f"budget:{low}:{high or ''}")]
         for label, low, high in BUDGETS
     ]
+    
     back_label = "⬅️ ተመለስ (Back)" if lang == "am" else "⬅️ Back"
-    main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
-
+    main_menu_label = "🏠 ዋናዉ ማዉጫ ይመለሱ (Main Menu)" if lang == "am" else "🏠 Main Menu"
+    
     buttons.append([InlineKeyboardButton(back_label, callback_data="back_to_subcity")])
     buttons.append([InlineKeyboardButton(main_menu_label, callback_data="restart_search")])
     return InlineKeyboardMarkup(buttons)
@@ -253,9 +108,10 @@ def get_budget_keyboard(lang="am"):
 
 def get_room_keyboard(lang="am"):
     buttons = [[InlineKeyboardButton(r, callback_data=f"room:{r}")] for r in ROOM_TYPES]
+    
     back_label = "⬅️ ተመለስ (Back)" if lang == "am" else "⬅️ Back"
-    main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
-
+    main_menu_label = "🏠 ዋናዉ ማዉጫ ይመለሱ (Main Menu)" if lang == "am" else "🏠 Main Menu"
+    
     buttons.append([InlineKeyboardButton(back_label, callback_data="back_to_budget")])
     buttons.append([InlineKeyboardButton(main_menu_label, callback_data="restart_search")])
     return InlineKeyboardMarkup(buttons)
@@ -263,59 +119,45 @@ def get_room_keyboard(lang="am"):
 
 def get_result_action_keyboard(lang="am"):
     contact_label = f"💬 ያናግሩ / Contact (@{SUPPORT_USERNAME})"
-    main_menu_label = "🏠 ወደ ዋናው ማውጫ ይመለሱ" if lang == "am" else "🏠 Main Menu"
-
-    return InlineKeyboardMarkup([
+    main_menu_label = "🏠 ዋናዉ ማዉጫ ይመለሱ (Main Menu)" if lang == "am" else "🏠 Main Menu"
+    
+    buttons = [
         [InlineKeyboardButton(contact_label, url=f"https://t.me/{SUPPORT_USERNAME}")],
         [InlineKeyboardButton(main_menu_label, callback_data="restart_search")]
-    ])
+    ]
+    return InlineKeyboardMarkup(buttons)
 
 
 # ---------- Channel Handler ----------
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.edited_channel_post
-    if not post or not (post.text or post.caption):
+    if not post:
+        return
+        
+    post_text = post.text or post.caption
+    if not post_text:
         return
 
     if CHANNEL_ID and post.chat.id != CHANNEL_ID:
         return
 
-    post_text = post.text or post.caption
-    parsed = parse_listing(post_text)
-
-    save_listing(
-        message_id=post.message_id,
-        subcity=parsed["subcity"],
-        room=parsed["room"],
-        price=parsed["price"],
-        phone=parsed["phone"],
-        raw_text=post_text
-    )
-    logger.info(f"Listings DB Updated — Message ID: {post.message_id}")
+    listing = parse_listing(post_text)
+    listing["message_id"] = post.message_id
+    
+    listings = load_listings()
+    listings = [l for l in listings if l.get("message_id") != post.message_id]
+    listings.append(listing)
+    save_listings(listings)
+    print(f"Saved listing: {listing}")
 
 
-# ---------- Command Handlers ----------
+# ---------- Flow Handlers ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    register_user(user)
     context.user_data.clear()
-
-    joined = await is_user_joined(context.bot, user.id)
-    if not joined:
-        text = (
-            "ቦቱን ለመጠቀም እባክዎ አስቀድመው የቴሌግራም ቻናላችንን ይቀላቀሉ!\n\n"
-            "Please join our channel first to use this bot!"
-        )
-        if update.message:
-            await update.message.reply_text(text, reply_markup=get_force_join_keyboard())
-        elif update.callback_query:
-            await update.callback_query.answer()
-            await update.callback_query.edit_message_text(text, reply_markup=get_force_join_keyboard())
-        return
-
     text = "እባክዎ ቋንቋ ይምረጡ / Please choose your language:"
+    
     if update.message:
         await update.message.reply_text(text, reply_markup=get_language_keyboard())
     elif update.callback_query:
@@ -323,130 +165,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=get_language_keyboard())
 
 
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    total_users, total_listings = get_stats()
-    text = (
-        f"📊 **Hawassa Rental Bot Statistics**\n\n"
-        f"👥 **Total Registered Users:** {total_users}\n"
-        f"🏠 **Total Active Listings:** {total_listings}"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    broadcast_text = " ".join(context.args)
-    if not broadcast_text:
-        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
-        return
-
-    with get_db() as conn:
-        users = conn.execute("SELECT user_id FROM users").fetchall()
-
-    success_count = 0
-    fail_count = 0
-
-    for user in users:
-        try:
-            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
-            success_count += 1
-        except Exception:
-            fail_count += 1
-
-    await update.message.reply_text(
-        f"📢 Broadcast Finished!\n\n✅ Sent to: {success_count}\n❌ Failed: {fail_count}"
-    )
-
-
-async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: `/delete <message_id>`", parse_mode="Markdown")
-        return
-
-    msg_id = int(context.args[0])
-    removed = delete_listing(msg_id)
-
-    if removed:
-        await update.message.reply_text(f"✅ Listing `{msg_id}` successfully removed from database.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"❌ Listing `{msg_id}` not found in database.", parse_mode="Markdown")
-
-
-# ---------- Callback Query Flow ----------
-
-async def on_check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = update.effective_user.id
-    joined = await is_user_joined(context.bot, user_id)
-
-    if joined:
-        await query.answer("ተረጋግጧል! አመሰግናለሁ። / Verified!")
-        text = "እባክዎ ቋንቋ ይምረጡ / Please choose your language:"
-        await query.edit_message_text(text, reply_markup=get_language_keyboard())
-    else:
-        await query.answer("እባክዎ አስቀድመው ቻናሉን ይቀላቀሉ! / Please join the channel first!", show_alert=True)
-
-
 async def on_language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    lang = query.data.split(":", 1)[1]
+    context.user_data["lang"] = lang
 
-    if query.data.startswith("lang:"):
-        lang = query.data.split(":", 1)[1]
-        context.user_data["lang"] = lang
-
-    lang = context.user_data.get("lang", "am")
     text = (
-        "እባክዎ ከታች ካሉት ይምረጡ:\nአከራይ ነዎት ወይስ ተከራይ?"
+        "የትኛው ክፍለ ከተማ ውስጥ ቤት ይፈልጋሉ?"
         if lang == "am"
-        else "Please select your option:\nAre you a landlord or a tenant?"
+        else "Which sub-city are you looking in?"
     )
-    await query.edit_message_text(text, reply_markup=get_role_keyboard(lang))
-
-
-async def on_role_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    role = query.data.split(":", 1)[1]
-    context.user_data["role"] = role
-    lang = context.user_data.get("lang", "am")
-
-    if role == "landlord":
-        text = (
-            "የሚከራይ ወይም የሚሸጥ ቤት ለማስተዋወቅ አድሚን ያናግሩ።"
-            if lang == "am"
-            else "To advertise a house for rent or sale, please contact the admin."
-        )
-        await query.edit_message_text(text, reply_markup=get_landlord_keyboard(lang))
-    else:
-        text = (
-            "የትኛው ክፍለ ከተማ ውስጥ ቤት ይፈልጋሉ?"
-            if lang == "am"
-            else "Which sub-city are you looking in?"
-        )
-        await query.edit_message_text(text, reply_markup=get_subcity_keyboard(lang))
+    await query.edit_message_text(text, reply_markup=get_subcity_keyboard(lang))
 
 
 async def on_subcity_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
+    
     if query.data.startswith("subcity:"):
         subcity = query.data.split(":", 1)[1]
         context.user_data["subcity"] = subcity
 
     lang = context.user_data.get("lang", "am")
     text = (
-        "የገንዘብ መጠንዎን ይምረጡ:"
+        "የገንዘብ መጠንዎን ይምረጡ (Select budget range):"
         if lang == "am"
         else "Select your budget range:"
     )
@@ -456,7 +199,7 @@ async def on_subcity_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_budget_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
+    
     if query.data.startswith("budget:"):
         _, low, high = query.data.split(":")
         context.user_data["budget_low"] = int(low)
@@ -474,14 +217,37 @@ async def on_budget_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     room = query.data.split(":", 1)[1]
+
     subcity = context.user_data.get("subcity")
     budget_low = context.user_data.get("budget_low")
     budget_high = context.user_data.get("budget_high")
     lang = context.user_data.get("lang", "am")
 
-    exact_results, related_results = search_listings(subcity, room, budget_low, budget_high)
+    listings = load_listings()
+    exact_results = []
+    related_results = []
+
+    for l in listings:
+        if l.get("subcity") != subcity:
+            continue
+        if l.get("room") != room:
+            continue
+
+        price = l.get("price")
+        if price is not None:
+            is_exact = True
+            if price < budget_low:
+                is_exact = False
+            if budget_high is not None and price > budget_high:
+                is_exact = False
+
+            if is_exact:
+                exact_results.append(l)
+            else:
+                related_results.append(l)
+        else:
+            related_results.append(l)
 
     if not exact_results and not related_results:
         no_match_text = (
@@ -492,7 +258,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Header Message
+    # Status Header Message
     header_text = (
         f"🎯 **ትክክለኛ ፍለጋ ({len(exact_results)})**"
         if lang == "am"
@@ -500,7 +266,7 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.edit_message_text(header_text, parse_mode="Markdown")
 
-    # Forward Exact Matches
+    # Send Exact Matches
     for r in exact_results[:5]:
         try:
             await context.bot.forward_message(
@@ -509,15 +275,15 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=r["message_id"]
             )
         except Exception:
-            await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
+            await context.bot.send_message(chat_id=query.message.chat_id, text=r["text"])
 
-    # Forward Related Matches (Prices slightly outside requested range)
+    # Send Related Matches (Nearby Prices like 1000, 1500, 5500, 6000)
     if related_results:
         related_header = (
             f"\n💡 **ተዛማጅ ፍለጋዎች (የተለያየ ዋጋ) / Related Searches ({len(related_results[:3])}):**"
         )
         await context.bot.send_message(chat_id=query.message.chat_id, text=related_header, parse_mode="Markdown")
-
+        
         for r in related_results[:3]:
             try:
                 await context.bot.forward_message(
@@ -526,9 +292,9 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=r["message_id"]
                 )
             except Exception:
-                await context.bot.send_message(chat_id=query.message.chat_id, text=r["raw_text"])
+                await context.bot.send_message(chat_id=query.message.chat_id, text=r["text"])
 
-    # Final Action Bar
+    # Final Action Bar (Contact + Return to Main Menu)
     completion_text = (
         f"ለበለጠ መረጃ ወይም ለትዕዛዝ ያናግሩ: @{SUPPORT_USERNAME}\nወደ ዋናው ማውጫ ለመመለስ ከታች ያለውን ቁልፍ ይጫኑ:"
         if lang == "am"
@@ -542,40 +308,24 @@ async def on_room_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------- Main Runner ----------
-
 def main():
-    init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # User & General Handlers
     app.add_handler(CommandHandler("start", start))
-    
-    # Admin Handlers
-    app.add_handler(CommandHandler("stats", admin_stats))
-    app.add_handler(CommandHandler("broadcast", admin_broadcast))
-    app.add_handler(CommandHandler("delete", admin_delete))
-
-    # Flow Callbacks
     app.add_handler(CallbackQueryHandler(start, pattern=r"^restart_search$"))
     app.add_handler(CallbackQueryHandler(start, pattern=r"^back_to_lang$"))
-    app.add_handler(CallbackQueryHandler(on_check_join, pattern=r"^check_join$"))
     app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^lang:"))
-    app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^back_to_role$"))
-    app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^role:"))
-    app.add_handler(CallbackQueryHandler(on_role_chosen, pattern=r"^back_to_subcity$"))
-    app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^subcity:"))
+    app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^back_to_subcity$"))
     app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^back_to_budget$"))
+    app.add_handler(CallbackQueryHandler(on_subcity_chosen, pattern=r"^subcity:"))
     app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
     app.add_handler(CallbackQueryHandler(on_room_chosen, pattern=r"^room:"))
-
-    # Channel Listener
     app.add_handler(MessageHandler(
         filters.ChatType.CHANNEL & (filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST),
         on_channel_post
     ))
 
-    logger.info("Hawassa Rental Bot is active and running...")
+    print("Bot is running...")
     app.run_polling()
 
 
