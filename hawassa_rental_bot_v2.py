@@ -39,7 +39,7 @@ from telegram.ext import (
     MessageHandler, ContextTypes, filters
 )
 
-BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_USERNAME = "@your_channel_username"
 DB_FILE = "listings.json"
 
