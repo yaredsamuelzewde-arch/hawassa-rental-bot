@@ -303,7 +303,7 @@ def get_category_keyboard(lang="am"):
         buttons = [
             [InlineKeyboardButton("🏠 ቤት (Home / Residential)", callback_data="cat:Home")],
             [InlineKeyboardButton("📱 ስልክ (Phones)", callback_data="cat:Phone")],
-            [InlineKeyboardButton("💻 ላፕቶፕ (Laptops)", callback_data="cat:Laptop")],
+            [InlineKeyboardButton("💻 ላፕቶപ്പ് (Laptops)", callback_data="cat:Laptop")],
             [InlineKeyboardButton("⬅️ ተመለስ (Back)", callback_data="back_to_role")]
         ]
     else:
@@ -420,8 +420,8 @@ async def handle_forwarded_import(update: Update, context: ContextTypes.DEFAULT_
 # ---------- States for Conversations ----------
 (
     POST_PHOTO, POST_CATEGORY, POST_ITEM_TYPE, POST_ROOM, POST_PRICE, POST_PHONE,
-    BROADCAST_MSG
-) = range(7)
+    BROADCAST_MSG, POST_CUSTOM_NAME
+) = range(8)
 
 
 # ---------- Admin Post Creation Wizard (Bilingual Amharic & English) ----------
@@ -467,6 +467,8 @@ async def process_post_category(update: Update, context: ContextTypes.DEFAULT_TY
         return POST_ITEM_TYPE
     elif category == "Phone":
         buttons = [[InlineKeyboardButton(b, callback_data=f"post_item:{b}")] for b in PHONE_BRANDS]
+        # Added the custom button here!
+        buttons.append([InlineKeyboardButton("➕ አዲስ ጨምር (Add New)", callback_data="post_item:ADD_CUSTOM")])
         await query.edit_message_text(
             "📱 <b>የስልክ ብራንድ ይምረጡ / Select Phone Brand:</b>",
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -475,6 +477,8 @@ async def process_post_category(update: Update, context: ContextTypes.DEFAULT_TY
         return POST_ITEM_TYPE
     else:
         buttons = [[InlineKeyboardButton(b, callback_data=f"post_item:{b}")] for b in LAPTOP_BRANDS]
+        # Added the custom button here!
+        buttons.append([InlineKeyboardButton("➕ አዲስ ጨምር (Add New)", callback_data="post_item:ADD_CUSTOM")])
         await query.edit_message_text(
             "💻 <b>የላፕቶፕ ብራንድ ይምረጡ / Select Laptop Brand:</b>",
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -486,8 +490,17 @@ async def process_post_item_type(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     item_type = query.data.split(":", 1)[1]
-    context.user_data["admin_post"]["item_type"] = item_type
     category = context.user_data["admin_post"]["category"]
+
+    # Intercept custom add
+    if item_type == "ADD_CUSTOM":
+        await query.edit_message_text(
+            "✍️ <b>እባክዎ አዲሱን ስም/ብራንድ ያስገቡ (Please type the new name):</b>",
+            parse_mode="HTML"
+        )
+        return POST_CUSTOM_NAME
+
+    context.user_data["admin_post"]["item_type"] = item_type
 
     if category == "Home":
         buttons = [[InlineKeyboardButton(r, callback_data=f"post_room:{r}")] for r in ROOM_TYPES]
@@ -504,6 +517,34 @@ async def process_post_item_type(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode="HTML"
         )
         return POST_PRICE
+
+async def process_custom_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    custom_name = update.message.text.strip()
+    category = context.user_data["admin_post"]["category"]
+    
+    # Save it to the current admin post data
+    context.user_data["admin_post"]["item_type"] = custom_name
+    
+    # Add it to the global list so everyone can see it dynamically
+    if category == "Phone" and custom_name not in PHONE_BRANDS:
+        if "Other Phone" in PHONE_BRANDS:
+            PHONE_BRANDS.insert(PHONE_BRANDS.index("Other Phone"), custom_name)
+        else:
+            PHONE_BRANDS.append(custom_name)
+            
+    elif category == "Laptop" and custom_name not in LAPTOP_BRANDS:
+        if "Other Laptop" in LAPTOP_BRANDS:
+            LAPTOP_BRANDS.insert(LAPTOP_BRANDS.index("Other Laptop"), custom_name)
+        else:
+            LAPTOP_BRANDS.append(custom_name)
+
+    context.user_data["admin_post"]["room"] = "N/A"
+    await update.message.reply_text(
+        "💰 <b>ዋጋ ያስገቡ (በብር / ETB):\n<i>ምሳሌ: 25000 (Enter price in numbers):</i></b>",
+        parse_mode="HTML"
+    )
+    return POST_PRICE
+
 
 async def process_post_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -832,6 +873,10 @@ def main():
             POST_PHOTO: [MessageHandler(filters.PHOTO, process_post_photo)],
             POST_CATEGORY: [CallbackQueryHandler(process_post_category, pattern=r"^post_cat:")],
             POST_ITEM_TYPE: [CallbackQueryHandler(process_post_item_type, pattern=r"^post_item:")],
+            
+            # The newly added state handler for Custom Name entry
+            POST_CUSTOM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_name)],
+            
             POST_ROOM: [CallbackQueryHandler(process_post_room, pattern=r"^post_room:")],
             POST_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_post_price)],
             POST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_post_phone)],
