@@ -285,24 +285,33 @@ def get_language_keyboard():
 
 def get_role_keyboard(lang="am"):
     if lang == "am":
-        buttons = [[InlineKeyboardButton("🏠 አከራይ / ሻጭ", callback_data="role:landlord")], [InlineKeyboardButton("🔍 ተከራይ / ገዢ", callback_data="role:tenant")], [InlineKeyboardButton("🌐 ቋንቋ ቀይር", callback_data="back_to_lang")]]
+        buttons = [
+            [InlineKeyboardButton("🏠 ማስታወቂያ ማውጣት / Post", callback_data="role:landlord")],
+            [InlineKeyboardButton("🔍 ቤት ወይም ዕቃ መፈለግ / Search", callback_data="role:tenant")],
+            [InlineKeyboardButton("🌐 ቋንቋ ቀይር / Change Language", callback_data="back_to_lang")]
+        ]
     else:
-        buttons = [[InlineKeyboardButton("🏠 Landlord / Seller", callback_data="role:landlord")], [InlineKeyboardButton("🔍 Tenant / Buyer", callback_data="role:tenant")], [InlineKeyboardButton("🌐 Change Language", callback_data="back_to_lang")]]
+        buttons = [
+            [InlineKeyboardButton("🏠 Post / Advertise Property", callback_data="role:landlord")],
+            [InlineKeyboardButton("🔍 Search / Find Property", callback_data="role:tenant")],
+            [InlineKeyboardButton("🌐 Change Language", callback_data="back_to_lang")]
+        ]
     return InlineKeyboardMarkup(buttons)
 
-def get_category_keyboard(lang="am"):
+def get_category_keyboard(lang="am", role="tenant"):
+    # If posting laptops/phones, emphasize Seller (ሻጭ), otherwise standard categories
     if lang == "am":
         buttons = [
             [InlineKeyboardButton("🏠 ቤት (Home / Residential)", callback_data="cat:Home")],
-            [InlineKeyboardButton("📱 ስልክ (Phones)", callback_data="cat:Phone")],
-            [InlineKeyboardButton("💻 ላፕቶപ്പ് (Laptops)", callback_data="cat:Laptop")],
+            [InlineKeyboardButton("📱 ስልክ - ሻጭ (Phone Seller) / ገዢ (Buyer)", callback_data="cat:Phone")],
+            [InlineKeyboardButton("💻 ላፕቶപ്പ് - ሻጭ (Laptop Seller) / ገዢ (Buyer)", callback_data="cat:Laptop")],
             [InlineKeyboardButton("⬅️ ተመለስ (Back)", callback_data="back_to_role")]
         ]
     else:
         buttons = [
             [InlineKeyboardButton("🏠 Home (Residential)", callback_data="cat:Home")],
-            [InlineKeyboardButton("📱 Phone", callback_data="cat:Phone")],
-            [InlineKeyboardButton("💻 Laptop", callback_data="cat:Laptop")],
+            [InlineKeyboardButton("📱 Phone (Seller / Buyer)", callback_data="cat:Phone")],
+            [InlineKeyboardButton("💻 Laptop (Seller / Buyer)", callback_data="cat:Laptop")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_role")]
         ]
     return InlineKeyboardMarkup(buttons)
@@ -319,13 +328,14 @@ def get_subcity_keyboard(lang="am"):
     return InlineKeyboardMarkup(buttons)
 
 def get_phone_brand_keyboard(lang="am"):
-    buttons = [[InlineKeyboardButton(brand, callback_data=f"phone_brand:{brand}")] for brand in PHONE_BRANDS]
+    buttons = [[InlineKeyboardButton(f"{brand} — ሻጭ (Seller) / ገዢ (Buyer)", callback_data=f"phone_brand:{brand}")] for brand in PHONE_BRANDS]
     back_label = "⬅️ ተመለስ (Back)" if lang == "am" else "⬅️ Back"
     buttons.append([InlineKeyboardButton(back_label, callback_data="back_to_category")])
     return InlineKeyboardMarkup(buttons)
 
 def get_laptop_brand_keyboard(lang="am"):
-    buttons = [[InlineKeyboardButton(brand, callback_data=f"laptop_brand:{brand}")] for brand in LAPTOP_BRANDS]
+    # Customized specifically with ሻጭ (Seller) and ገዢ (Buyer) for laptops as requested
+    buttons = [[InlineKeyboardButton(f"{brand} | ሻጭ (Seller) / ገዢ (Buyer)", callback_data=f"laptop_brand:{brand}")] for brand in LAPTOP_BRANDS]
     back_label = "⬅️ ተመለስ (Back)" if lang == "am" else "⬅️ Back"
     buttons.append([InlineKeyboardButton(back_label, callback_data="back_to_category")])
     return InlineKeyboardMarkup(buttons)
@@ -416,7 +426,7 @@ async def handle_forwarded_import(update: Update, context: ContextTypes.DEFAULT_
 ) = range(7)
 
 
-# ---------- Admin Post Creation Wizard (Bilingual Amharic & English) ----------
+# ---------- Admin Post Creation Wizard ----------
 
 async def start_post_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
@@ -432,8 +442,8 @@ async def process_post_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["admin_post"]["photo"] = update.message.photo[-1].file_id
     buttons = [
         [InlineKeyboardButton("🏠 ቤት (House / Residential)", callback_data="post_cat:Home")],
-        [InlineKeyboardButton("📱 ስልክ (Phone)", callback_data="post_cat:Phone")],
-        [InlineKeyboardButton("💻 ላፕቶፕ (Laptop)", callback_data="post_cat:Laptop")]
+        [InlineKeyboardButton("📱 ስልክ - ሻጭ (Phone)", callback_data="post_cat:Phone")],
+        [InlineKeyboardButton("💻 ላፕቶപ്പ് - ሻጭ (Laptop)", callback_data="post_cat:Laptop")]
     ]
     await update.message.reply_text(
         "📦 <b>ምድብ ይምረጡ / Select Category:</b>\n\n"
@@ -460,7 +470,7 @@ async def process_post_category(update: Update, context: ContextTypes.DEFAULT_TY
     elif category == "Phone":
         buttons = [[InlineKeyboardButton(b, callback_data=f"post_item:{b}")] for b in PHONE_BRANDS]
         await query.edit_message_text(
-            "📱 <b>የስልክ ብራንድ ይምረጡ / Select Phone Brand:</b>",
+            "📱 <b>የስልክ ብራንድ ይምረጡ (ሻጭ / Seller):</b>",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML"
         )
@@ -468,7 +478,7 @@ async def process_post_category(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         buttons = [[InlineKeyboardButton(b, callback_data=f"post_item:{b}")] for b in LAPTOP_BRANDS]
         await query.edit_message_text(
-            "💻 <b>የላፕቶፕ ብራንድ ይምረጡ / Select Laptop Brand:</b>",
+            "💻 <b>የላፕቶፕ ብራንድ ይምረጡ (ሻጭ ሻጭ / Seller):</b>",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML"
         )
@@ -492,7 +502,7 @@ async def process_post_item_type(update: Update, context: ContextTypes.DEFAULT_T
     else:
         context.user_data["admin_post"]["room"] = "N/A"
         await query.edit_message_text(
-            "💰 <b>ዋጋ ያስገቡ (በብር / ETB):\n<i>ምሳሌ: 25000 (Enter price in numbers):</i></b>",
+            "💰 <b>የዕቃውን ዋጋ ያስገቡ (በብር / ETB - ሻጭ):\n<i>ምሳሌ: 25000:</i></b>",
             parse_mode="HTML"
         )
         return POST_PRICE
@@ -502,7 +512,7 @@ async def process_post_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data["admin_post"]["room"] = query.data.split(":", 1)[1]
     await query.edit_message_text(
-        "💰 <b>የቤቱን ዋጋ ያስገቡ (በብር / ETB):\n<i>ምሳሌ: 8000 (Enter price):</i></b>",
+        "💰 <b>የቤቱን ዋጋ ያስገቡ (በብር / ETB):\n<i>ምሳሌ: 8000:</i></b>",
         parse_mode="HTML"
     )
     return POST_PRICE
@@ -631,7 +641,7 @@ async def on_language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     if query.data.startswith("lang:"): context.user_data["lang"] = query.data.split(":", 1)[1]
     lang = context.user_data.get("lang", "am")
-    text = "እባክዎ ከታች ካሉት ይምረጡ:\nአከራይ/ሻጭ ነዎት ወይስ ተከራይ/ገዢ?" if lang == "am" else "Are you a landlord/seller or tenant/buyer?"
+    text = "እባክዎ ከታች ካሉት ይምረጡ:\nማስታወቂያ ማውጣት ወይስ ቤት/ዕቃ መፈለግ?" if lang == "am" else "What would you like to do?"
     await query.edit_message_text(text, reply_markup=get_role_keyboard(lang))
 
 
@@ -646,7 +656,7 @@ async def on_role_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=get_landlord_keyboard(lang))
     else:
         text = "ምን ዓይነት አገልግሎት ይፈልጋሉ? (እባክዎ ምድብ ይምረጡ)" if lang == "am" else "What are you looking for? (Please choose category)"
-        await query.edit_message_text(text, reply_markup=get_category_keyboard(lang))
+        await query.edit_message_text(text, reply_markup=get_category_keyboard(lang, role))
 
 
 async def on_category_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -664,10 +674,10 @@ async def on_category_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text = "የትኛው ክፍለ ከተማ ውስጥ ቤት ይፈልጋሉ?" if lang == "am" else "Which sub-city are you looking in?"
         await query.edit_message_text(text, reply_markup=get_subcity_keyboard(lang))
     elif category == "Phone":
-        text = "የትኛውን የስልክ ብራንድ ይፈልጋሉ?" if lang == "am" else "Which phone brand are you looking for?"
+        text = "የትኛውን የስልክ ብራንድ (ሻጭ / ገዢ) ይፈልጋሉ?" if lang == "am" else "Which phone brand (Seller / Buyer) are you looking for?"
         await query.edit_message_text(text, reply_markup=get_phone_brand_keyboard(lang))
     else:
-        text = "የትኛውን የላፕቶፕ ብራንድ ይፈልጋሉ?" if lang == "am" else "Which laptop brand are you looking for?"
+        text = "የትኛውን የላፕቶፕ ብራንድ (ሻጭ / ገዢ) ይፈልጋሉ?" if lang == "am" else "Which laptop brand (Seller / Buyer) are you looking for?"
         await query.edit_message_text(text, reply_markup=get_laptop_brand_keyboard(lang))
 
 
@@ -693,7 +703,7 @@ async def on_phone_brand_chosen(update: Update, context: ContextTypes.DEFAULT_TY
         update_user_search(update.effective_user.id, item_type=brand)
 
     lang = context.user_data.get("lang", "am")
-    text = "የስልክ ዋጋ መጠን ይምረጡ:" if lang == "am" else "Select phone budget range:"
+    text = "የስልክ ዋጋ መጠን ይምረጡ (ሻጭ / ገዢ):" if lang == "am" else "Select phone budget range (Seller / Buyer):"
     await query.edit_message_text(text, reply_markup=get_budget_keyboard("Phone", lang))
 
 
@@ -706,7 +716,7 @@ async def on_laptop_brand_chosen(update: Update, context: ContextTypes.DEFAULT_T
         update_user_search(update.effective_user.id, item_type=brand)
 
     lang = context.user_data.get("lang", "am")
-    text = "የላፕቶፕ ዋጋ መጠን ይምረጡ:" if lang == "am" else "Select laptop budget range:"
+    text = "የላፕቶፕ ዋጋ መጠን ይምረጡ (ሻጭ / ገዢ):" if lang == "am" else "Select laptop budget range (Seller / Buyer):"
     await query.edit_message_text(text, reply_markup=get_budget_keyboard("Laptop", lang))
 
 
@@ -868,7 +878,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_budget_chosen, pattern=r"^budget:"))
     app.add_handler(CallbackQueryHandler(on_room_chosen, pattern=r"^room:"))
 
-    logger.info("Bot starting with Bilingual Admin Post Creator...")
+    logger.info("Bot starting with Laptop/Phone Seller (ሻጭ) and Buyer (ገዢ) configuration...")
     app.run_polling()
 
 if __name__ == "__main__":
