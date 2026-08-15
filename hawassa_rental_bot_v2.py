@@ -3,7 +3,7 @@ Hawassa Rental & Marketplace Telegram Bot — Fully Integrated Production Code (
 ========================================================================================================
 Features:
 - Railway Persistent Volume + DB_PATH Environment Variable (Zero data loss on restart or redeploy)
-- Multi-Category Support with Bilingual Admin Post Creator: Home (ቤት), Phone (ስልክ), and Laptop (ላፕቶപ്പ്)
+- Multi-Category Support with Bilingual Admin Post Creator: Home (ቤት), Phone (ስልክ), and Laptop (ላፕቶፕ)
 - Custom Brand/Specification Filters & Budgets for Electronics (Up to 100,000+ ETB)
 - Forward-to-Import: Forward old channel posts to the bot to add them instantly!
 - Interactive Broadcast with Bilingual Button Menu (Contact Admin & Main Menu) (/stats, /broadcast)
@@ -27,7 +27,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/Hawassa_Rental")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+# Support multiple admin IDs via ADMIN_IDS or legacy ADMIN_ID env variables
+raw_admin_ids = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "0"))
+ADMIN_IDS = {int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdigit()}
+
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Jatech_support")
 
 # Bulletproof Database Path Configuration for Railway Persistence
@@ -191,7 +195,7 @@ def parse_listing_text(text):
     category = "Home"
     if any(k in text_lower for k in ["iphone", "samsung", "tecno", "infinix", "xiaomi", "ስልክ", "phone", "mobile"]):
         category = "Phone"
-    elif any(k in text_lower for k in ["hp", "dell", "lenovo", "macbook", "asus", "laptop", "core i", "ላፕቶപ്പ്"]):
+    elif any(k in text_lower for k in ["hp", "dell", "lenovo", "macbook", "asus", "laptop", "core i", "ላፕቶፕ"]):
         category = "Laptop"
 
     item_type = "Tabor"
@@ -303,7 +307,7 @@ def get_category_keyboard(lang="am"):
         buttons = [
             [InlineKeyboardButton("🏠 ቤት (Home / Residential)", callback_data="cat:Home")],
             [InlineKeyboardButton("📱 ስልክ (Phones)", callback_data="cat:Phone")],
-            [InlineKeyboardButton("💻 ላፕቶപ്പ് (Laptops)", callback_data="cat:Laptop")],
+            [InlineKeyboardButton("💻 ላፕቶፕ (Laptops)", callback_data="cat:Laptop")],
             [InlineKeyboardButton("⬅️ ተመለስ (Back)", callback_data="back_to_role")]
         ]
     else:
@@ -398,7 +402,7 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_forwarded_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_IDS: return
     msg = update.message
     if not msg or not (msg.text or msg.caption): return
 
@@ -427,7 +431,7 @@ async def handle_forwarded_import(update: Update, context: ContextTypes.DEFAULT_
 # ---------- Admin Post Creation Wizard (Bilingual Amharic & English) ----------
 
 async def start_post_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    if update.effective_user.id not in ADMIN_IDS: return ConversationHandler.END
     context.user_data["admin_post"] = {}
     await update.message.reply_text(
         "📸 <b>ማስታወቂያ መፍጠሪያ / Post Creator</b>\n\n"
@@ -441,7 +445,7 @@ async def process_post_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     buttons = [
         [InlineKeyboardButton("🏠 ቤት (House / Residential)", callback_data="post_cat:Home")],
         [InlineKeyboardButton("📱 ስልክ (Phone)", callback_data="post_cat:Phone")],
-        [InlineKeyboardButton("💻 ላፕቶപ്പ് (Laptop)", callback_data="post_cat:Laptop")]
+        [InlineKeyboardButton("💻 ላፕቶፕ (Laptop)", callback_data="post_cat:Laptop")]
     ]
     await update.message.reply_text(
         "📦 <b>ምድብ ይምረጡ / Select Category:</b>\n\n"
@@ -467,7 +471,6 @@ async def process_post_category(update: Update, context: ContextTypes.DEFAULT_TY
         return POST_ITEM_TYPE
     elif category == "Phone":
         buttons = [[InlineKeyboardButton(b, callback_data=f"post_item:{b}")] for b in PHONE_BRANDS]
-        # Added the custom button here!
         buttons.append([InlineKeyboardButton("➕ አዲስ ጨምር (Add New)", callback_data="post_item:ADD_CUSTOM")])
         await query.edit_message_text(
             "📱 <b>የስልክ ብራንድ ይምረጡ / Select Phone Brand:</b>",
@@ -477,7 +480,6 @@ async def process_post_category(update: Update, context: ContextTypes.DEFAULT_TY
         return POST_ITEM_TYPE
     else:
         buttons = [[InlineKeyboardButton(b, callback_data=f"post_item:{b}")] for b in LAPTOP_BRANDS]
-        # Added the custom button here!
         buttons.append([InlineKeyboardButton("➕ አዲስ ጨምር (Add New)", callback_data="post_item:ADD_CUSTOM")])
         await query.edit_message_text(
             "💻 <b>የላፕቶፕ ብራንድ ይምረጡ / Select Laptop Brand:</b>",
@@ -492,7 +494,6 @@ async def process_post_item_type(update: Update, context: ContextTypes.DEFAULT_T
     item_type = query.data.split(":", 1)[1]
     category = context.user_data["admin_post"]["category"]
 
-    # Intercept custom add
     if item_type == "ADD_CUSTOM":
         await query.edit_message_text(
             "✍️ <b>እባክዎ አዲሱን ስም/ብራንድ ያስገቡ (Please type the new name):</b>",
@@ -522,10 +523,8 @@ async def process_custom_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     custom_name = update.message.text.strip()
     category = context.user_data["admin_post"]["category"]
     
-    # Save it to the current admin post data
     context.user_data["admin_post"]["item_type"] = custom_name
     
-    # Add it to the global list so everyone can see it dynamically
     if category == "Phone" and custom_name not in PHONE_BRANDS:
         if "Other Phone" in PHONE_BRANDS:
             PHONE_BRANDS.insert(PHONE_BRANDS.index("Other Phone"), custom_name)
@@ -597,7 +596,7 @@ async def process_post_phone(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ---------- Interactive Broadcast Wizard ----------
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    if update.effective_user.id not in ADMIN_IDS: return ConversationHandler.END
     await update.message.reply_text(
         "📢 <b>Broadcast Mode Started</b>\n\n"
         "Send your message, photo, or video. The bilingual button menu will be attached automatically.\n\n"
@@ -820,7 +819,7 @@ async def execute_search(query, context):
 # ---------- Admin /stats & /delete ----------
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_IDS: return
 
     with get_db() as conn:
         total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -851,7 +850,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id not in ADMIN_IDS: return
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("Usage: `/delete <message_id>`")
         return
@@ -873,10 +872,7 @@ def main():
             POST_PHOTO: [MessageHandler(filters.PHOTO, process_post_photo)],
             POST_CATEGORY: [CallbackQueryHandler(process_post_category, pattern=r"^post_cat:")],
             POST_ITEM_TYPE: [CallbackQueryHandler(process_post_item_type, pattern=r"^post_item:")],
-            
-            # The newly added state handler for Custom Name entry
             POST_CUSTOM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_name)],
-            
             POST_ROOM: [CallbackQueryHandler(process_post_room, pattern=r"^post_room:")],
             POST_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_post_price)],
             POST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_post_phone)],
