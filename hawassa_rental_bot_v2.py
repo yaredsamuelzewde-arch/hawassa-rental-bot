@@ -303,7 +303,7 @@ def get_category_keyboard(lang="am"):
         buttons = [
             [InlineKeyboardButton("🏠 ቤት (Home / Residential)", callback_data="cat:Home")],
             [InlineKeyboardButton("📱 ስልክ (Phones)", callback_data="cat:Phone")],
-            [InlineKeyboardButton("💻 ላፕቶപ്പ് (Laptops)", callback_data="cat:Laptop")],
+            [InlineKeyboardButton("💻 ላፕቶፕ (Laptops)", callback_data="cat:Laptop")],
             [InlineKeyboardButton("⬅️ ተመለስ (Back)", callback_data="back_to_role")]
         ]
     else:
